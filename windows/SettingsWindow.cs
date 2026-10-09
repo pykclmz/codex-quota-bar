@@ -387,7 +387,10 @@ namespace CodexQuotaBar
     sealed class RoundedCard : Panel
     {
         public Color Fill,Stroke; public float Unit=1;
-        public Label Heading; public Control HeaderAccessory;
+        public Label Heading;
+        Control headerAccessory;
+        Size accessoryNatural;
+        public Control HeaderAccessory { get { return headerAccessory; } set { headerAccessory=value; accessoryNatural=value==null ? Size.Empty : value.Size; } }
         readonly List<Control> content=new List<Control>();
         bool arranging;
         public RoundedCard() { DoubleBuffered=true; ResizeRedraw=true; }
@@ -402,12 +405,22 @@ namespace CodexQuotaBar
             base.OnLayout(e); if(arranging || Heading==null || Width<=0) return; arranging=true;
             try {
                 int width=Math.Max(1,Width-S(44)),y=S(18);
-                int headingWidth=HeaderAccessory==null ? width : Math.Max(1,width-HeaderAccessory.Width-S(14));
+                bool stack=HeaderAccessory!=null && Heading.GetPreferredSize(Size.Empty).Width+accessoryNatural.Width+S(14)>width;
+                int accessoryWidth=Math.Min(width,accessoryNatural.Width);
+                int accessoryHeight=HeaderAccessory==null ? 0 : Math.Max(accessoryNatural.Height,HeaderAccessory.GetPreferredSize(new Size(accessoryWidth,0)).Height);
+                int headingWidth=HeaderAccessory==null || stack ? width : Math.Max(1,width-accessoryWidth-S(14));
                 int headingHeight=Heading.GetPreferredSize(new Size(headingWidth,0)).Height;
-                int rowHeight=Math.Max(headingHeight,HeaderAccessory==null ? 0 : HeaderAccessory.Height);
-                Heading.Bounds=new Rectangle(S(22),y+(rowHeight-headingHeight)/2,headingWidth,headingHeight);
-                if(HeaderAccessory!=null) HeaderAccessory.Location=new Point(Width-S(22)-HeaderAccessory.Width,y+(rowHeight-HeaderAccessory.Height)/2);
-                y+=rowHeight+S(14);
+                if(stack) {
+                    Heading.Bounds=new Rectangle(S(22),y,headingWidth,headingHeight);
+                    y+=headingHeight+S(12);
+                    HeaderAccessory.Bounds=new Rectangle(S(22),y,accessoryWidth,accessoryHeight);
+                    y+=accessoryHeight+S(14);
+                } else {
+                    int rowHeight=Math.Max(headingHeight,accessoryHeight);
+                    Heading.Bounds=new Rectangle(S(22),y+(rowHeight-headingHeight)/2,headingWidth,headingHeight);
+                    if(HeaderAccessory!=null) HeaderAccessory.Bounds=new Rectangle(Width-S(22)-accessoryWidth,y+(rowHeight-accessoryHeight)/2,accessoryWidth,accessoryHeight);
+                    y+=rowHeight+S(14);
+                }
                 foreach(var control in content) {
                     int height; var label=control as Label;
                     if(label!=null) height=label.GetPreferredSize(new Size(width,0)).Height;
@@ -430,23 +443,39 @@ namespace CodexQuotaBar
     sealed class ActionRow : Panel
     {
         public float Unit=1;
+        readonly Dictionary<Control,Size> naturalSizes=new Dictionary<Control,Size>();
+        bool arranging;
         int S(float n) { return (int)Math.Round(n*Unit); }
+        protected override void OnControlAdded(ControlEventArgs e) { naturalSizes[e.Control]=e.Control.Size; base.OnControlAdded(e); }
+        protected override void OnControlRemoved(ControlEventArgs e) { naturalSizes.Remove(e.Control); base.OnControlRemoved(e); }
+        Size ActionSize(Control button,int available)
+        {
+            Size natural; if(!naturalSizes.TryGetValue(button,out natural)) natural=button.Size;
+            int width=Math.Min(natural.Width,Math.Max(1,available));
+            int height=Math.Max(natural.Height,button.GetPreferredSize(new Size(width,0)).Height);
+            return new Size(width,height);
+        }
         public override Size GetPreferredSize(Size proposed)
         {
             int x=0,y=0,height=0,width=Math.Max(1,proposed.Width);
             foreach(Control button in Controls) {
-                if(x>0 && x+button.Width>width) { x=0; y+=height+S(10); height=0; }
-                height=Math.Max(height,button.Height); x+=Math.Min(button.Width,width)+S(12);
+                var size=ActionSize(button,width);
+                if(x>0 && x+size.Width>width) { x=0; y+=height+S(10); height=0; }
+                height=Math.Max(height,size.Height); x+=size.Width+S(12);
             }
             return new Size(width,y+height);
         }
         protected override void OnLayout(LayoutEventArgs e)
         {
-            base.OnLayout(e); int x=0,y=0,height=0;
-            foreach(Control button in Controls) {
-                if(x>0 && x+button.Width>Width) { x=0; y+=height+S(10); height=0; }
-                button.Location=new Point(x,y); height=Math.Max(height,button.Height); x+=button.Width+S(12);
-            }
+            base.OnLayout(e); if(arranging) return; arranging=true;
+            try {
+                int x=0,y=0,height=0;
+                foreach(Control button in Controls) {
+                    var size=ActionSize(button,ClientSize.Width);
+                    if(x>0 && x+size.Width>ClientSize.Width) { x=0; y+=height+S(10); height=0; }
+                    button.Bounds=new Rectangle(new Point(x,y),size); height=Math.Max(height,size.Height); x+=size.Width+S(12);
+                }
+            } finally { arranging=false; }
         }
     }
     sealed class QuotaTile : Control

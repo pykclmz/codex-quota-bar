@@ -35,7 +35,10 @@ namespace CodexQuotaBar
                 foreach(Control other in card.Controls) if(child!=other && child.Bounds.IntersectsWith(other.Bounds)) Check(false,"Overlapping card content: "+child.Text+" / "+other.Text);
             }
             foreach(var label in All(form).OfType<Label>()) if(label.Text.Length>0) Check(label.GetPreferredSize(new Size(label.Width,0)).Height<=label.Height,"Clipped text: "+label.Text);
-            foreach(var row in All(form).OfType<ActionRow>()) foreach(Control button in row.Controls) Check(row.ClientRectangle.Contains(button.Bounds),"Wrapped action must fit its row");
+            foreach(var row in All(form).OfType<ActionRow>()) foreach(Control button in row.Controls) {
+                Check(row.ClientRectangle.Contains(button.Bounds),"Wrapped action must fit its row: "+button.Text+" "+button.Bounds+" in "+row.ClientRectangle);
+                Check(button.GetPreferredSize(new Size(button.Width,0)).Height<=button.Height,"Wrapped action text must fit its height: "+button.Text);
+            }
             foreach(var tile in All(form).OfType<QuotaTile>()) Check(tile.GetPreferredSize(new Size(tile.Width,0)).Height<=tile.Height,"Quota reset text must fit without ellipsis");
             var body=All(form).OfType<FlowLayoutPanel>().First();
             foreach(var card in All(form).OfType<RoundedCard>()) Check(card.Width+body.Padding.Horizontal<=body.ClientSize.Width+1,"Card must fit viewport width: "+card.Width+" + "+body.Padding.Horizontal+" vs "+body.ClientSize.Width+" scroll="+body.VerticalScroll.Visible+" heading="+card.Heading.Text);
@@ -82,7 +85,10 @@ namespace CodexQuotaBar
             view.Buckets["review"]=new string('审',60)+"额度类型";
             var dpi=typeof(SettingsWindow).GetMethod("ApplyDpi",BindingFlags.NonPublic|BindingFlags.Instance);
             foreach(float scale in new[]{1F,1.25F,1.5F,1.75F,2F,2.5F,3F}) {
-                dpi.Invoke(form,new object[]{scale}); form.Size=form.MinimumSize; Application.DoEvents();
+                dpi.Invoke(form,new object[]{scale});
+                // Include the small work area used by hosted Windows runners and laptops.
+                form.MinimumSize=new Size(Math.Min(form.MinimumSize.Width,1024),Math.Min(form.MinimumSize.Height,768));
+                form.Size=form.MinimumSize; Application.DoEvents();
                 foreach(var page in new[]{"额度概览","外观显示","额度提醒","运行设置"}) {
                     Click(form,page); LayoutCheck(form);
                     if(scale==1.75F) Capture(form,"settings-responsive-"+(page=="额度概览" ? "overview" : page=="外观显示" ? "display" : page=="额度提醒" ? "alerts" : "runtime"));
