@@ -15,8 +15,8 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.2.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
 
 namespace CodexQuotaBar
 {
@@ -702,6 +702,31 @@ namespace CodexQuotaBar
             }
             Program.LogLifecycle(enabled ? "autostart-enabled" : "autostart-disabled");
         }
+        public static void StartBackground(bool debug)
+        {
+            dynamic service=Scheduler(); dynamic folder=service.GetFolder(@"\");
+            if(!debug) try {
+                dynamic existing=folder.GetTask(TaskName);
+                dynamic action=existing.Definition.Actions.Item(1);
+                if(existing.Enabled && String.Equals((string)action.Path,Path.Combine(Program.Root,"CodexQuotaBar.exe"),StringComparison.OrdinalIgnoreCase)
+                    && (string)action.Arguments=="--background") { existing.Run(null); return; }
+            } catch(COMException e) { if(e.ErrorCode!=unchecked((int)0x80070002)) throw; }
+            // A demand-only task gives the watcher an independent Windows parent.
+            // It has no logon trigger and does not change the user's autostart choice.
+            dynamic task=service.NewTask(0);
+            task.RegistrationInfo.Description="Codex 额度条：按需启动后台显示（无自动启动触发器）。";
+            task.Principal.UserId=UserId; task.Principal.LogonType=3; task.Principal.RunLevel=0;
+            dynamic launch=task.Actions.Create(0);
+            launch.Path=Path.Combine(Program.Root,"CodexQuotaBar.exe");
+            launch.Arguments=debug ? "--background --debug-state" : "--background";
+            launch.WorkingDirectory=Program.Root;
+            task.Settings.Enabled=true; task.Settings.AllowDemandStart=true;
+            task.Settings.DisallowStartIfOnBatteries=false; task.Settings.StopIfGoingOnBatteries=false;
+            task.Settings.ExecutionTimeLimit="PT0S"; task.Settings.MultipleInstances=2;
+            task.Settings.RestartInterval="PT1M"; task.Settings.RestartCount=3;
+            dynamic registered=folder.RegisterTaskDefinition(Name+"-Manual-"+UserId,task,6,UserId,null,3,null);
+            registered.Run(null);
+        }
     }
 
     class OverlayWindow : Form
@@ -723,6 +748,7 @@ namespace CodexQuotaBar
         readonly Settings settings = Settings.Load();
         readonly NotifyIcon tray = new NotifyIcon();
         SettingsWindow settingsWindow;
+        SettingsBridge settingsBridge;
         bool autoStartEnabled;
         bool autoStartKnown, autoStartReading;
         string autoStartError;
@@ -774,7 +800,7 @@ namespace CodexQuotaBar
             surface = light ? Color.FromArgb(249,249,249) : Color.FromArgb(33,33,33);
             codexSurface=surface;
             tray.Icon = SystemIcons.Information; tray.Text = "Codex 额度条：正在连接"; tray.Visible = true;
-            tray.MouseUp += delegate(object sender, MouseEventArgs e) { if(e.Button==MouseButtons.Right) OpenSettings(); };
+            tray.MouseUp += delegate(object sender, MouseEventArgs e) { if(e.Button==MouseButtons.Right) OpenLocalSettings(); };
             tray.DoubleClick += delegate { OpenSettings(); };
             tracker.Tick += delegate { Track(); };
             refresh.Tick += async delegate { if(DateTime.UtcNow >= retry.DueUtc && Native.IsCodex(target)) await RefreshQuota(); };
@@ -799,6 +825,7 @@ namespace CodexQuotaBar
             };
             Shown += delegate {
                 Hide(); tracker.Start(); refresh.Start(); Program.LogLifecycle("watcher-ready " + Program.Version); Track();
+                settingsBridge=new SettingsBridge(DispatchSettings);
                 if (Program.OpenSettingsAtStartup) OpenSettings();
                 if (settings.Notice != null) tray.ShowBalloonTip(5000,"Codex 额度条",settings.Notice,ToolTipIcon.Warning);
             };
@@ -815,7 +842,65 @@ namespace CodexQuotaBar
             }
             return saved;
         }
+        Task<object> DispatchSettings(Dictionary<string,object> request)
+        {
+            var completion=new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if(closing || !IsHandleCreated) { completion.SetResult(new { error="额度条正在退出。" }); return completion.Task; }
+            try { BeginInvoke((Action)(async delegate {
+                try {
+                    if(closing) { completion.TrySetResult(new { error="额度条正在退出。" }); return; }
+                    string action=Convert.ToString(Json.Get(request,"action"));
+                    if(action=="settings_read") {
+                        if(!autoStartKnown && !autoStartReading) {
+                            try { autoStartEnabled=await Task.Run(()=>AutoStart.ReadEnabled()); autoStartKnown=true; }
+                            catch { autoStartError="无法读取自动启动状态。"; }
+                        }
+                        completion.TrySetResult(new { data=PluginSettings.Read(ReadSettingsView()) });
+                    }
+                    else if(action=="settings_update") {
+                        var patch=PluginSettings.Validate(Json.Obj(Json.Get(request,"values")));
+                        if(patch.ContainsKey("bucket") && (snapshot==null || !snapshot.Buckets.ContainsKey((string)patch["bucket"]))) throw new ArgumentException("此额度类型已不可用，请重新打开设置。");
+                        foreach(var item in patch) {
+                            var failure=item.Key=="autostart" ? await Task.Run(()=>ApplyPreference(item.Key,item.Value)) : ApplyPreference(item.Key,item.Value);
+                            if(failure!=null) { completion.TrySetResult(new { error=failure }); return; }
+                        }
+                        if(settingsWindow!=null && !settingsWindow.IsDisposed) settingsWindow.UpdateLive();
+                        completion.TrySetResult(new { data=new { values=PluginSettings.Values(ReadSettingsView()) } });
+                    } else if(action=="quota_open_settings") { OpenLocalSettings(); completion.TrySetResult(new { text="已打开额度条设置。" }); }
+                    else if(action=="quota_reset_position") {
+                        var failure=ApplyPreference("position",null);
+                        completion.TrySetResult(failure==null ? (object)new { text="已恢复默认位置。" } : new { error=failure });
+                    } else if(action=="quota_status" || action=="quota_refresh") {
+                        if(action=="quota_refresh") await RefreshQuota();
+                        var view=ReadSettingsView();
+                        if(action=="quota_refresh" && view.Error!=null) { completion.TrySetResult(new { error=view.Error }); return; }
+                        var text=view.Preview+(view.Stale ? "\n数据待更新" : "")+(view.Updated.HasValue ? "\n上次更新 "+view.Updated.Value.ToString("MM/dd HH:mm:ss") : "");
+                        completion.TrySetResult(new { text=text,data=new { preview=view.Preview,stale=view.Stale,updated=view.Updated.HasValue ? view.Updated.Value.ToString("o") : null,paused=view.Paused,
+                            running=true,visible=Visible,targetFound=view.TargetFound,inputLocated=composerAnchor!=null && composerAnchor.Valid } });
+                    } else completion.TrySetResult(new { error="未知操作。" });
+                } catch(ArgumentException e) { completion.TrySetResult(new { error=e.Message }); }
+                catch { completion.TrySetResult(new { error="设置未能完成，请重试。" }); }
+            })); } catch(InvalidOperationException) { completion.TrySetResult(new { error="额度条正在退出。" }); }
+            return completion.Task;
+        }
         void OpenSettings()
+        {
+            if(TryOpenCodexSettings()) return;
+            OpenLocalSettings();
+        }
+        bool TryOpenCodexSettings()
+        {
+            try {
+                var path=Path.Combine(Program.Root,"plugin-integration.json");
+                if(!File.Exists(path)) return false;
+                var data=Json.Decode(File.ReadAllText(path));
+                string url=Convert.ToString(Json.Get(data,"url"));
+                Uri uri;
+                if(!Uri.TryCreate(url,UriKind.Absolute,out uri) || uri.Scheme!="codex" || uri.Host!="plugins" || (uri.AbsolutePath!="/codex-quota-bar" && uri.AbsolutePath!="/codex-quota-bar@quota-local")) return false;
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute=true }); return true;
+            } catch { return false; }
+        }
+        void OpenLocalSettings()
         {
             if (closing) return;
             if (settingsWindow == null || settingsWindow.IsDisposed) {
@@ -1065,6 +1150,7 @@ namespace CodexQuotaBar
         {
             Program.LogLifecycle("watcher-stopped");
             closing = true; tracker.Stop(); refresh.Stop(); tray.Visible = false;
+            if(settingsBridge!=null) settingsBridge.Dispose();
             follower.Dispose();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             anchorReader.Dispose(); ReleaseServer(); tracker.Dispose(); refresh.Dispose(); tooltip.Dispose(); tray.Dispose();
@@ -1082,7 +1168,7 @@ namespace CodexQuotaBar
 
     static class Program
     {
-        public const string Version = "1.2.2-local";
+        public const string Version = "1.3.1-local";
         public static string Root = AppDomain.CurrentDomain.BaseDirectory;
         public static EventWaitHandle StopSignal;
         public static EventWaitHandle SettingsSignal;
@@ -1127,6 +1213,9 @@ namespace CodexQuotaBar
         }
         static int Run(string[] args)
         {
+            if(args.Contains("--mcp")) return QuotaMcp.Run();
+            if(args.Contains("--start-background")) { AutoStart.StartBackground(args.Contains("--debug-state")); return 0; }
+            if(args.Contains("--check-running")) { try { SettingsBridge.Call("quota_status",null); return 0; } catch { return 1; } }
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             if(args.Length==2 && args[0]=="--anchor-worker") {
                 int parentId=Int32.Parse(args[1]);

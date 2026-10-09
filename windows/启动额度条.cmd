@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" "%~dp0CodexQuotaBar.exe"
+start "" "%~dp0CodexQuotaBar.exe" --start-background

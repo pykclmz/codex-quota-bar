@@ -18,6 +18,8 @@ runtime-state.json
 layout-probe.json
 startup.log
 enable-debug.flag
+plugin-integration.json
+plugin/bin/
 *.tmp
 windows/tests/settings-*.png
 windows/tests/settings-test-*/

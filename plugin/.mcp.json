@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "quota-settings": {
+      "command": "./bin/CodexQuotaBar.exe",
+      "args": ["--mcp"],
+      "cwd": ".",
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 40
+    }
+  }
+}

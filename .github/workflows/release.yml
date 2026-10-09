@@ -39,13 +39,19 @@ jobs:
         run: |
           ./windows/tests/test-settings-window.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Settings-window regression failed' }
+      - name: Native plugin settings tests
+        shell: pwsh
+        run: |
+          ./windows/tests/test-plugin-settings.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Plugin-settings regression failed' }
       - name: Package
         shell: pwsh
         run: |
           ./windows/tests/test-install.ps1
           New-Item -ItemType Directory -Force dist/windows | Out-Null
-          $files = @('CodexQuotaBar.exe','启动额度条.cmd','退出额度条.cmd','开启自动跟随.cmd','关闭自动跟随.cmd','使用说明.md','install.ps1','回退上一版本.cmd')
+          $files = @('CodexQuotaBar.exe','启动额度条.cmd','退出额度条.cmd','开启自动跟随.cmd','关闭自动跟随.cmd','使用说明.md','install.ps1','install-plugin.ps1','回退上一版本.cmd')
           foreach ($name in $files) { Copy-Item -LiteralPath (Join-Path windows $name) -Destination dist/windows }
+          Copy-Item -LiteralPath plugin -Destination dist/windows/plugin -Recurse
           Copy-Item LICENSE dist/windows
           Compress-Archive -Path dist/windows/* -DestinationPath dist/CodexQuotaBar-Windows.zip -Force
           $hash = (Get-FileHash dist/CodexQuotaBar-Windows.zip -Algorithm SHA256).Hash.ToLower()

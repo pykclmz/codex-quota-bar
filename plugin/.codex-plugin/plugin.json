@@ -1,0 +1,17 @@
+{
+  "name": "codex-quota-bar",
+  "version": "1.3.2",
+  "description": "查看 Codex 剩余额度，在原生插件设置中调整额度条。",
+  "author": { "name": "pykclmz" },
+  "license": "MIT",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex 额度条",
+    "shortDescription": "额度概览、外观和运行设置",
+    "longDescription": "与 Windows 本地额度条共用缓存和设置，修改立即生效。",
+    "developerName": "pykclmz",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "查看我的 Codex 剩余额度"
+  }
+}

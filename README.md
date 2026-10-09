@@ -10,12 +10,12 @@
 
 这是个人开发的辅助工具，与 OpenAI 无隶属关系。独立运行，不修改 Codex 安装文件。
 
-本仓库基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar) 修改，保留原项目的 MIT 许可证。当前 Windows 版本为 **1.2.2**；macOS 代码保留上游测试版，以下 Windows 改进不适用于 macOS。
+本仓库基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar) 修改，保留原项目的 MIT 许可证。当前 Windows 版本为 **1.3.1**；macOS 代码保留上游测试版，以下 Windows 改进不适用于 macOS。
 
 ## 当前 Windows 版改进
 
 - 额度条定位在输入框底部的空白区域，窗口移动时即时跟随；中文输入法候选框保持在额度条上方。
-- 右键打开独立设置窗口，包含额度概览、外观显示、额度提醒和运行设置；左上角显示 Codex。
+- 可选本地插件把额度条设置接入 Codex 原生插件详情页，右键额度条直接打开；托盘右键始终提供独立设置备用入口。
 - 支持深浅主题、显示详情选择、双额度预览与自动保存；长文字自动换行，小窗口可滚动，检查覆盖 100%～300% 系统缩放。
 - 刷新和自动启动设置在后台完成，重复操作有保护，读取失败显示明确状态。
 - 额度读取失败保留最近数据并延迟重试；定位超时可恢复，设置损坏时尝试读取备份。
@@ -33,6 +33,12 @@
 Mac 版是原生 Swift / AppKit 应用，提供 Apple Silicon + Intel 通用二进制。**目前为测试版**：需要辅助功能权限；未经 Apple Developer ID 签名或公证，首次启动可能需要在系统设置中允许打开。通用二进制不代表 Codex 桌面版本身支持所有 Intel Mac，请先确认本机 Codex 能正常运行。
 
 Mac 自动定位受 Codex 的辅助功能控件结构影响。若版本差异导致无法定位，可在菜单栏选择“手动校准位置”。Mac 编译与核心测试由 GitHub Actions 执行；真机输入框定位、多屏、自动登录启动仍需要 Mac 用户验证。
+
+## Codex 内的设置页
+
+Windows 1.3.1 可通过本地插件，在 Codex 原生插件页修改主题、显示内容、额度类型、提醒、自动启动和临时隐藏。安装额度条后运行 `windows/install-plugin.ps1`；下载包中该脚本位于解压目录。安装后，聊天框下额度条右键会打开插件详情页。若 Codex 尚未刷新列表，重新打开 Codex 即可。
+
+系统托盘中的额度条图标右键始终打开独立设置窗口，提供备份和备用入口。设置集成采用官方 [Structured Settings](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#structured-settings)，位于插件详情页，不会在 Codex 的“通用 / 外观”页增加第三方选项。插件通过仅当前 Windows 用户可访问的命名管道共用额度条缓存与偏好，不额外轮询，不打开 HTTP 端口。
 
 ## 自动跟随 Codex
 

@@ -61,7 +61,7 @@ namespace CodexQuotaBar
         {
             this.read=read; this.apply=apply; this.refresh=refresh; this.command=command;
             Text="Codex 额度条 · 设置"; Name="QuotaSettings";
-            Icon=SystemIcons.Information; ShowInTaskbar=true; DoubleBuffered=true;
+            ShowIcon=false; ShowInTaskbar=true; DoubleBuffered=true;
             AutoScaleMode=AutoScaleMode.None; StartPosition=FormStartPosition.Manual;
             KeyPreview=true; KeyDown += delegate(object sender,KeyEventArgs e) { if(e.KeyCode==Keys.Escape) { Close(); e.Handled=true; e.SuppressKeyPress=true; } };
             unit=Math.Max(1,Native.Dpi(Handle)/96F); FitInitialWindow(workArea);
@@ -86,12 +86,14 @@ namespace CodexQuotaBar
         void Colors()
         {
             paletteDark=view.Dark;
-            canvas=view.Dark ? Color.FromArgb(21,24,29) : Color.FromArgb(245,247,250);
-            cardColor=view.Dark ? Color.FromArgb(30,34,40) : Color.White;
-            ink=view.Dark ? Color.FromArgb(237,241,246) : Color.FromArgb(30,41,55);
-            muted=view.Dark ? Color.FromArgb(155,167,183) : Color.FromArgb(105,119,137);
-            border=view.Dark ? Color.FromArgb(49,58,69) : Color.FromArgb(225,231,238);
-            accent=view.Dark ? Color.FromArgb(87,211,174) : Color.FromArgb(0,125,100);
+            // Neutral tokens match Codex's native settings rather than a separate
+            // colored dashboard. Accent is reserved for quota data and feedback.
+            canvas=view.Dark ? Color.FromArgb(33,33,33) : Color.White;
+            cardColor=canvas;
+            ink=view.Dark ? Color.White : Color.FromArgb(13,13,13);
+            muted=view.Dark ? Color.FromArgb(205,205,205) : Color.FromArgb(93,93,93);
+            border=view.Dark ? Color.FromArgb(66,66,66) : Color.FromArgb(230,230,230);
+            accent=view.Dark ? Color.FromArgb(106,206,163) : Color.FromArgb(0,120,87);
             int dark=view.Dark ? 1 : 0; try { DwmSetWindowAttribute(Handle,20,ref dark,sizeof(int)); } catch { }
         }
         Label TextLabel(string text,float size,bool bold,bool quiet)
@@ -103,8 +105,8 @@ namespace CodexQuotaBar
         Button ActionButton(string text,Action click,bool primary)
         {
             var button=new Button { Text=text,Name=text,AccessibleName=text,Size=new Size(S(140),S(38)),
-                Font=Face(12,false),FlatStyle=FlatStyle.Flat,ForeColor=primary ? (view.Dark ? canvas : Color.White) : ink,
-                BackColor=primary ? accent : cardColor,Cursor=Cursors.Hand,UseVisualStyleBackColor=false };
+                Font=Face(13,false),FlatStyle=FlatStyle.Flat,ForeColor=primary ? canvas : ink,
+                BackColor=primary ? ink : cardColor,Cursor=Cursors.Hand,UseVisualStyleBackColor=false };
             button.FlatAppearance.BorderColor=border; button.FlatAppearance.BorderSize=primary ? 0 : 1;
             button.Click += delegate { click(); }; return button;
         }
@@ -118,13 +120,13 @@ namespace CodexQuotaBar
             try {
                 foreach(Control control in Controls.Cast<Control>().ToArray()) control.Dispose(); Controls.Clear(); DisposeFonts(0);
                 nav.Clear(); cards.Clear(); tiles.Clear(); switches.Clear(); switchStates.Clear();
-                Colors(); BackColor=canvas; Font=Face(12,false);
+                Colors(); BackColor=canvas; Font=Face(14,false);
                 try { scrollbarWidth=GetSystemMetricsForDpi(2,(uint)Native.Dpi(Handle)); }
                 catch { scrollbarWidth=Math.Max(S(18),SystemInformation.VerticalScrollBarWidth); }
-                sidebar=new Panel { BackColor=cardColor }; Controls.Add(sidebar);
-                var brand=TextLabel("Codex",27,true,false); brand.Name="Brand"; brand.ForeColor=accent;
+                sidebar=new Panel { BackColor=view.Dark ? Color.FromArgb(24,24,24) : Color.FromArgb(249,249,249) }; Controls.Add(sidebar);
+                var brand=TextLabel("Codex",22,true,false); brand.Name="Brand";
                 brand.Bounds=new Rectangle(S(22),S(28),S(132),S(46)); sidebar.Controls.Add(brand);
-                var name=TextLabel("额度与偏好",14,true,false); name.Bounds=new Rectangle(S(22),S(84),S(132),S(30)); sidebar.Controls.Add(name);
+                var name=TextLabel("额度条设置",13,false,true); name.Bounds=new Rectangle(S(22),S(84),S(132),S(30)); sidebar.Controls.Add(name);
                 string[] keys={"overview","display","alerts","runtime"}, names={"额度概览","外观显示","额度提醒","运行设置"};
                 for(int i=0;i<keys.Length;i++) {
                     var key=keys[i]; var button=ActionButton(names[i],delegate { SelectPage(key); },false);
@@ -135,7 +137,7 @@ namespace CodexQuotaBar
                 var version=TextLabel("版本 "+Program.Version,10,false,true); version.Name="Version"; sidebar.Controls.Add(version);
                 sidebar.Resize += delegate { version.Bounds=new Rectangle(S(22),sidebar.Height-S(48),S(132),S(36)); };
                 header=new Panel(); Controls.Add(header);
-                title=TextLabel("",23,true,false); subtitle=TextLabel("",12,false,true); header.Controls.Add(title); header.Controls.Add(subtitle);
+                title=TextLabel("",22,true,false); subtitle=TextLabel("",13,false,true); header.Controls.Add(title); header.Controls.Add(subtitle);
                 footer=new Panel(); Controls.Add(footer);
                 feedback=TextLabel(message,11,false,true); feedback.Name="Feedback"; footer.Controls.Add(feedback);
                 body=new FlowLayoutPanel { FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true,
@@ -187,7 +189,7 @@ namespace CodexQuotaBar
             var card=new RoundedCard { Fill=cardColor,Stroke=border,Unit=unit,Margin=new Padding(0,0,0,S(16)),BackColor=canvas,
                 Width=CardWidth() };
             card.Heading=TextLabel(heading,15,true,false); card.Controls.Add(card.Heading);
-            if(note!=null) card.AddContent(TextLabel(note,11,false,true));
+            if(note!=null) card.AddContent(TextLabel(note,13,false,true));
             body.Controls.Add(card); cards.Add(card); return card;
         }
         void AddText(RoundedCard card,string text,float size,bool quiet) { card.AddContent(TextLabel(text,size,false,quiet)); }
@@ -206,8 +208,8 @@ namespace CodexQuotaBar
                 body.AutoScrollPosition=Point.Empty;
                 foreach(var button in nav) {
                     bool selected=(string)button.Tag==page;
-                    button.BackColor=selected ? (view.Dark ? Color.FromArgb(37,65,59) : Color.FromArgb(222,242,235)) : cardColor;
-                    button.ForeColor=selected ? accent : muted;
+                    button.BackColor=selected ? (view.Dark ? Color.FromArgb(48,48,48) : Color.FromArgb(235,235,235)) : sidebar.BackColor;
+                    button.ForeColor=selected ? ink : muted;
                 }
                 if(page=="overview") Overview(); if(page=="display") DisplayPage(); if(page=="alerts") AlertsPage(); if(page=="runtime") RuntimePage();
                 UpdateControls(); LayoutShell();
@@ -266,7 +268,7 @@ namespace CodexQuotaBar
         void ToggleCard(string heading,string note,string name)
         {
             var card=Card(heading,note);
-            var toggle=new ToggleSwitch { Name=name,AccessibleName=heading,Accent=accent,OffColor=border,BackColor=cardColor,ForeColor=ink,
+            var toggle=new ToggleSwitch { Name=name,AccessibleName=heading,Accent=ink,OffColor=border,BackColor=cardColor,ForeColor=canvas,
                 Size=new Size(S(56),S(30)),Cursor=Cursors.Hand };
             card.HeaderAccessory=toggle; card.Controls.Add(toggle); switches[name]=toggle;
             var state=TextLabel("",11,false,true); card.AddContent(state); switchStates[name]=state;
@@ -435,7 +437,7 @@ namespace CodexQuotaBar
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
-            using(var path=BarDesign.Round(new RectangleF(0.5F,0.5F,Width-1,Height-1),S(12)))
+            using(var path=BarDesign.Round(new RectangleF(0.5F,0.5F,Width-1,Height-1),S(8)))
             using(var brush=new SolidBrush(Fill)) using(var pen=new Pen(Stroke)) { e.Graphics.FillPath(brush,path); e.Graphics.DrawPath(pen,path); }
             base.OnPaint(e);
         }
@@ -532,7 +534,7 @@ namespace CodexQuotaBar
             var rect=new RectangleF(2,2,Width-4,Height-4);
             using(var path=BarDesign.Round(rect,rect.Height/2)) using(var brush=new SolidBrush(Checked ? Accent : OffColor)) e.Graphics.FillPath(brush,path);
             float diameter=rect.Height-6;
-            using(var brush=new SolidBrush(Enabled ? Color.White : Color.FromArgb(175,182,190))) e.Graphics.FillEllipse(brush,Checked ? rect.Right-diameter-3 : rect.Left+3,rect.Top+3,diameter,diameter);
+            using(var brush=new SolidBrush(!Enabled ? Color.FromArgb(155,155,155) : Checked ? ForeColor : Color.White)) e.Graphics.FillEllipse(brush,Checked ? rect.Right-diameter-3 : rect.Left+3,rect.Top+3,diameter,diameter);
             if(Focused) ControlPaint.DrawFocusRectangle(e.Graphics,ClientRectangle,ForeColor,BackColor);
         }
     }
