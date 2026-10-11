@@ -10,7 +10,7 @@
 
 这是个人开发的辅助工具，与 OpenAI 无隶属关系。独立运行，不修改 Codex 安装文件。
 
-本仓库基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar) 修改，保留原项目的 MIT 许可证。当前 Windows 版本为 **1.3.2**；macOS 代码保留上游测试版，以下 Windows 改进不适用于 macOS。
+本仓库基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar) 修改，保留原项目的 MIT 许可证。当前 Windows 版本为 **1.3.5**；macOS 代码保留上游测试版，以下 Windows 改进不适用于 macOS。
 
 ## 当前 Windows 版改进
 
@@ -19,6 +19,7 @@
 - 支持深浅主题、显示详情选择、双额度预览与自动保存；长文字自动换行，小窗口可滚动，检查覆盖 100%～300% 系统缩放。
 - 刷新和自动启动设置在后台完成，重复操作有保护，读取失败显示明确状态。
 - 额度读取失败保留最近数据并延迟重试；定位超时可恢复，设置损坏时尝试读取备份。
+- 拖动期间保持已验证的输入框相对位置；拒绝移动中混合坐标和过期定位结果，跨屏按输入框所在区域裁剪，调整大小与 DPI 改变后重新定位。
 - 提供安装、版本备份与回退脚本，以及窗口层级、设置界面、数据恢复和安装回退测试。
 
 ## 下载与开始使用
@@ -36,7 +37,7 @@ Mac 自动定位受 Codex 的辅助功能控件结构影响。若版本差异导
 
 ## Codex 内的设置页
 
-Windows 1.3.2 可通过本地插件，在 Codex 原生插件页修改主题、显示内容、额度类型、提醒、自动启动和临时隐藏。安装额度条后运行 `windows/install-plugin.ps1`；下载包中该脚本位于解压目录。安装后，聊天框下额度条右键会打开插件详情页。若 Codex 尚未刷新列表，重新打开 Codex 即可。
+Windows 1.3.5 可通过本地插件，在 Codex 原生插件页修改主题、显示内容、额度类型、提醒、自动启动和临时隐藏。安装额度条后运行 `windows/install-plugin.ps1`；下载包中该脚本位于解压目录。安装后，聊天框下额度条右键会打开插件详情页。若 Codex 尚未刷新列表，重新打开 Codex 即可。
 
 不显示系统托盘图标；插件页的“更多设置”可打开独立设置窗口，提供备份和备用入口。设置集成采用官方 [Structured Settings](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#structured-settings)，位于插件详情页，不会在 Codex 的“通用 / 外观”页增加第三方选项。插件通过仅当前 Windows 用户可访问的命名管道共用额度条缓存与偏好，不额外轮询，不打开 HTTP 端口。
 

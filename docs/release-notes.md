@@ -1,8 +1,9 @@
-﻿在 Codex 输入框附近显示剩余额度、重置倒计时和重置日期。独立运行，不修改 Codex。
+在 Codex 输入框附近显示剩余额度、重置倒计时和重置日期。独立运行，不修改 Codex。
 
-Windows 增强版 1.3.2 基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar)，保留 MIT 许可证。
+Windows 增强版 1.3.5 基于 [Thinkdiff-lw/codex-quota-bar](https://github.com/Thinkdiff-lw/codex-quota-bar)，保留 MIT 许可证。
 
 - 输入框底部定位与窗口移动即时跟随；中文输入法候选框位于额度条上方。
+- 修复连续拖动使定位缓存过期、移动中混合坐标、跨屏裁剪错误和旧定位请求干扰新布局的问题；缩放与 DPI 变化期间临时推算工具栏位置并持续校准，相邻屏幕边界保持连续跟随。
 - 可选本地插件把设置接入 Codex 原生插件详情页；右键额度条打开插件设置，“更多设置”保留独立设置入口。
 - 后台运行不再显示系统托盘图标，低额度提醒使用 Windows 通知；隐藏额度条后仍可在插件页恢复显示。
 - 独立设置窗口采用与 Codex 一致的中性色、按钮和开关样式，包含额度概览、外观显示、额度提醒和运行设置。

@@ -28,7 +28,89 @@ namespace CodexQuotaBar
             Check(!cache.Usable(new Rectangle(0,0,900,700),144,now), "resize rejects old geometry");
             var moved = new Rectangle(-1600,100,1600,1000);
             Check(cache.Usable(moved,144,now) && cache.Current.SlotAt(moved).Left==-1000, "move to negative-coordinate display retains relative placement");
+            Check(!cache.Update(good,moved,144,now.AddSeconds(1)) && cache.ValidatedUtc==now,"late result captured at an old window position is rejected after drag");
+            cache.BeginTranslation(now.AddSeconds(1));
+            Check(cache.Usable(moved,144,now.AddSeconds(20)),"long same-DPI drag does not expire a validated relative anchor");
+            Check(!cache.Usable(moved,192,now.AddSeconds(20)),"cross-DPI move cannot reuse old toolbar geometry even during drag");
+            cache.EndTranslation(now.AddSeconds(20));
+            Check(cache.Usable(moved,144,now.AddSeconds(21)) && !cache.Usable(moved,144,now.AddSeconds(23)),"move end grants only bounded grace for fresh input validation");
+            cache.BeginTranslation(now.AddSeconds(30));
+            Check(!cache.Usable(moved,144,now.AddSeconds(31)),"starting a drag cannot revive an already expired anchor");
+            var inconsistent=new ComposerAnchor { Owner=owner,Dpi=144,Editor=good.Editor,Slot=new Rectangle(-3000,900,500,40) };
+            Check(!cache.Update(inconsistent,owner,144,now.AddSeconds(31)),"mixed coordinate frames outside the owner are rejected");
             cache.Clear(); Check(!cache.Usable(owner,144,now), "resume invalidates cached geometry");
+            var responsive=new ComposerAnchor { Owner=new Rectangle(0,0,2560,1368),Dpi=144,
+                Editor=new Rectangle(929,1196,1176,74),Slot=new Rectangle(1130,1275,664,47) };
+            cache.Update(responsive,responsive.Owner,144,now); cache.BeginTranslation(now);
+            var resized=new Rectangle(-1800,80,1800,1100);
+            var projected=cache.ForFrame(resized,144,now.AddSeconds(20),true);
+            Check(projected!=null && projected.Valid && projected.Slot.Bottom==resized.Bottom-46,"continuous resize retains the validated toolbar bottom inset without hiding");
+            Check(projected.Slot.Left==responsive.Slot.Left+resized.Left+(resized.Width-responsive.Owner.Width)/2,"centered composer follows width changes while retaining sidebar inset");
+            Check(cache.Current==responsive && cache.ValidatedUtc==now,"projection never extends validation or overwrites the real anchor");
+            var dpiOwner=new Rectangle(0,0,1707,912);
+            var dpiFrame=cache.ForFrame(dpiOwner,96,now.AddSeconds(20),true);
+            Check(dpiFrame!=null && dpiFrame.Valid && dpiFrame.Slot.Height==31 && dpiFrame.Slot.Bottom==dpiOwner.Bottom-31,"cross-DPI projection uses the new physical scale and bottom offset");
+            Check(cache.ForFrame(resized,144,now.AddSeconds(20),false)==null,"temporary estimates cannot be used outside a layout transition");
+            cache.EndTranslation(now.AddSeconds(20));
+            Check(cache.ForFrame(resized,144,now.AddSeconds(21),false)!=null,"release after a long resize retains projection until the fresh toolbar arrives");
+            Check(cache.ForFrame(resized,144,now.AddSeconds(23),true)==null,"failed validation cannot retain projected geometry indefinitely");
+            var fresh=new ComposerAnchor { Owner=resized,Dpi=144,Editor=projected.Editor,Slot=projected.Slot,Mode="permission-toolbar" };
+            Check(cache.Update(fresh,resized,144,now.AddSeconds(23)) && cache.ForFrame(resized,144,now.AddSeconds(24),false)==fresh,"fresh controls replace the temporary estimate after resizing");
+            Check(responsive.Project(new Rectangle(0,0,300,200),144)==null,"projection refuses space too small for the composer and toolbar");
+            var withPane=new ComposerAnchor { Owner=responsive.Owner,Dpi=144,Editor=responsive.Editor,Slot=responsive.Slot,Viewport=new Rectangle(474,0,2086,1368) };
+            Check(withPane.Project(resized,144).Slot==projected.Slot,"explicit content-pane geometry matches the centered layout projection");
+            var narrowOwner=new Rectangle(0,0,1300,1000);
+            var narrow=responsive.Project(narrowOwner,144);
+            Check(narrow!=null && cache.Update(narrow,narrowOwner,144,now.AddSeconds(25)),"validate a smaller composer during continuous resize");
+            Check(cache.Current.Project(responsive.Owner,144).Editor.Width==responsive.Editor.Width,"expanding restores the observed composer width rather than retaining the last narrow width");
+            var staleChildren=new ComposerAnchor { Owner=responsive.Owner,Dpi=144,Editor=narrow.Editor,Slot=narrow.Slot };
+            Check(staleChildren.Valid && !cache.Update(staleChildren,responsive.Owner,144,now.AddSeconds(26)),"maximize rejects old child coordinates even when the native owner frame is current");
+            var changedFooter=new ComposerAnchor { Owner=new Rectangle(0,0,1300,1200),Dpi=144,
+                Editor=new Rectangle(525,1010,720,80),Slot=new Rectangle(715,1100,270,47) };
+            Check(cache.Update(changedFooter,changedFooter.Owner,144,now.AddSeconds(26)),"a genuinely changed footer layout is not mistaken for old child coordinates");
+            var toolbar=new ComposerAnchor { Owner=narrowOwner,Dpi=144,Toolbar=new Rectangle(500,908,720,47),Slot=new Rectangle(715,908,270,47),Mode="permission-toolbar-only" };
+            Check(toolbar.Valid && toolbar.Editor.IsEmpty,"fresh toolbar buttons remain a valid anchor during edit-node replacement");
+            Check(cache.Update(toolbar,narrowOwner,144,now.AddSeconds(26)) && cache.Usable(narrowOwner,144,now.AddSeconds(31)),"toolbar confirmation renews validation without requiring an edit node");
+            Check(toolbar.Project(new Rectangle(-1500,40,1500,1200),144)!=null,"toolbar-only confirmation also supports live resize projection");
+            toolbar.Toolbar=new Rectangle(-5000,908,720,47);
+            Check(!toolbar.Valid,"toolbar-only fallback cannot validate controls outside the owner");
+            var displays=new[] { new Rectangle(0,0,1920,1040),new Rectangle(1920,0,1920,1040),new Rectangle(-1600,100,1600,900) };
+            var otherScreenSlot=new Rectangle(2100,900,600,40);
+            Check(QuotaPlacement.ClipToDisplays(otherScreenSlot,displays)==otherScreenSlot,"composer on another monitor remains visible even when owner is on primary monitor");
+            var negativeSlot=new Rectangle(-1400,900,500,40);
+            Check(QuotaPlacement.ClipToDisplays(negativeSlot,displays)==negativeSlot,"negative monitor origin preserves physical input position");
+            var spanningSlot=new Rectangle(1700,900,600,40);
+            Check(QuotaPlacement.ClipToDisplays(spanningSlot,displays)==spanningSlot,"adjacent displays preserve the whole toolbar through the seam without a jump");
+            Check(QuotaPlacement.ClipToDisplays(spanningSlot,new[] {new Rectangle(0,0,1920,1040),new Rectangle(2000,0,1920,1040)})==new Rectangle(2000,900,300,40),"a real gap between monitors cannot be treated as visible toolbar space");
+            Check(QuotaPlacement.ClipToDisplays(new Rectangle(4000,900,500,40),displays).IsEmpty,"offscreen input never leaves a detached floating bar");
+        }
+        static int FakeAnchorWorker()
+        {
+            using(var input=new StreamReader(Console.OpenStandardInput(),Encoding.UTF8))
+            using(var output=new StreamWriter(Console.OpenStandardOutput(),new UTF8Encoding(false))) {
+                output.AutoFlush=true; string line;
+                while((line=input.ReadLine())!=null) {
+                    int x=Int32.Parse(line); System.Threading.Thread.Sleep(250);
+                    output.WriteLine(Json.Encode(new ComposerAnchor { Owner=new Rectangle(0,0,1600,1000),Dpi=144,
+                        Editor=new Rectangle(100,800,1200,80),Slot=new Rectangle(x,900,500,40) }));
+                }
+            }
+            return 0;
+        }
+        static async Task CancelledAnchor(string directory)
+        {
+            string originalRoot=Program.Root;
+            File.Copy(System.Reflection.Assembly.GetExecutingAssembly().Location,Path.Combine(directory,"CodexQuotaBar.exe"));
+            Program.Root=directory;
+            try { using(var reader=new AnchorReader()) {
+                var old=reader.Read(new IntPtr(111)); await Task.Delay(150); reader.Dispose();
+                var replacement=reader.Read(new IntPtr(222));
+                Check(await old==null,"cancelled old geometry query cannot return a usable anchor");
+                var fresh=await replacement;
+                Check(fresh!=null && fresh.Valid && fresh.Slot.Left==222,"old callback cannot kill or overwrite the replacement worker");
+                var next=await reader.Read(new IntPtr(333));
+                Check(next!=null && next.Slot.Left==333,"replacement worker remains reusable after cancellation");
+            }} finally { Program.Root=originalRoot; System.Threading.Thread.Sleep(100); }
         }
         static void Retry()
         {
@@ -114,11 +196,12 @@ namespace CodexQuotaBar
         [STAThread] static int Main(string[] args)
         {
             if (args.Length>0 && args[0]=="app-server") return FakeServer();
+            if (args.Length>0 && args[0]=="--anchor-worker") return FakeAnchorWorker();
             string directory=Path.Combine(Path.GetTempPath(),"codex-quota-tests-"+Guid.NewGuid().ToString("N"));
             string report=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"reliability-result.json");
             Directory.CreateDirectory(directory);
             try {
-                Anchors(); Retry(); PersistenceAndAlerts(directory); Protocol().GetAwaiter().GetResult();
+                Anchors(); Retry(); PersistenceAndAlerts(directory); CancelledAnchor(directory).GetAwaiter().GetResult(); Protocol().GetAwaiter().GetResult();
                 File.WriteAllText(report,Json.Encode(new { passed=true, checks=checks })); return 0;
             } catch(Exception error) { File.WriteAllText(report,Json.Encode(new { passed=false, checks=checks, error=error.ToString() })); return 1; }
             finally {

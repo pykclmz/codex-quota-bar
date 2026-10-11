@@ -12,6 +12,13 @@ namespace CodexQuotaBar
         delegate void WinEventCallback(IntPtr hook,uint eventType,IntPtr window,int objectId,int childId,uint thread,uint time);
         [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint first,uint last,IntPtr module,WinEventCallback callback,uint process,uint thread,uint flags);
         [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
+        [StructLayout(LayoutKind.Sequential)] struct GuiThreadInfo
+        {
+            public uint Size, Flags;
+            public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+            public Native.Rect CaretRect;
+        }
+        [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread,ref GuiThreadInfo info);
         readonly Control overlay;
         readonly Func<bool> canFollow;
         readonly Action geometryChanged;
@@ -20,14 +27,16 @@ namespace CodexQuotaBar
         IntPtr target, locationHook, moveHook;
         Rectangle ownerBounds, overlayBounds;
         int dpi;
-        bool positioned, disposed;
+        bool positioned, disposed, moving;
+        DateTime moveEventUtc;
         public bool EventsAvailable { get { return locationHook!=IntPtr.Zero; } }
-        public bool Moving { get { return movingTimer.Enabled; } }
+        public bool Moving { get { return moving; } }
+        public bool FrameTimerActive { get { return movingTimer.Enabled; } }
         public WindowFollower(Control overlay,Func<bool> canFollow,Action geometryChanged)
         {
             this.overlay=overlay; this.canFollow=canFollow; this.geometryChanged=geometryChanged;
             callback=OnWindowEvent;
-            movingTimer.Tick += delegate { FollowNow(); };
+            movingTimer.Tick += delegate { SynchronizeMotion(); FollowNow(); };
         }
         public void Attach(IntPtr window)
         {
@@ -43,15 +52,30 @@ namespace CodexQuotaBar
         {
             if(disposed || target==IntPtr.Zero) return;
             ownerBounds=owner; overlayBounds=bounds; dpi=ownerDpi; positioned=true;
+            if(moving && canFollow()) movingTimer.Start();
         }
         void OnWindowEvent(IntPtr hook,uint eventType,IntPtr window,int objectId,int childId,uint thread,uint time)
         {
             if(disposed || window!=target || objectId!=0 || childId!=0) return;
             try {
-                if(eventType==0x000A) { if(canFollow()) movingTimer.Start(); FollowNow(); }
-                else if(eventType==0x000B) { movingTimer.Stop(); FollowNow(); geometryChanged(); }
+                if(eventType==0x000A) { moveEventUtc=DateTime.UtcNow; moving=true; if(canFollow()) movingTimer.Start(); geometryChanged(); FollowNow(); }
+                else if(eventType==0x000B) { moveEventUtc=DateTime.UtcNow; moving=false; movingTimer.Stop(); FollowNow(); geometryChanged(); }
                 else if(eventType==0x800B) FollowNow();
             } catch { /* Never propagate managed exceptions across a native callback. */ }
+        }
+        public void SynchronizeMotion()
+        {
+            if(disposed || target==IntPtr.Zero) return;
+            // WinEvent is a notification, not authoritative state. Recover even if
+            // an END event was missed; a brief grace avoids racing queued START.
+            uint process; uint thread=Native.GetWindowThreadProcessId(target,out process);
+            if(thread==0) return;
+            var info=new GuiThreadInfo { Size=(uint)Marshal.SizeOf(typeof(GuiThreadInfo)) };
+            if(!GetGUIThreadInfo(thread,ref info)) return;
+            bool nativeMoving=(info.Flags&2)!=0 && info.MoveSize==target;
+            if(!nativeMoving && DateTime.UtcNow-moveEventUtc<TimeSpan.FromMilliseconds(250)) return;
+            moving=nativeMoving;
+            if(moving && canFollow()) movingTimer.Start(); else movingTimer.Stop();
         }
         void FollowNow()
         {
@@ -60,7 +84,9 @@ namespace CodexQuotaBar
             if(!Native.GetWindowRect(target,out native)) { positioned=false; movingTimer.Stop(); return; }
             var next=native.ToRectangle();
             if(next.Size!=ownerBounds.Size || Native.Dpi(target)!=dpi) {
-                positioned=false; geometryChanged(); return;
+                // Let the owner project its last validated composer for this frame.
+                // Keep receiving geometry events until a fresh UIA result arrives.
+                geometryChanged(); return;
             }
             if(next.Location==ownerBounds.Location) return;
             var translated=overlayBounds;
@@ -72,7 +98,7 @@ namespace CodexQuotaBar
         }
         void Detach()
         {
-            movingTimer.Stop(); positioned=false; target=IntPtr.Zero;
+            movingTimer.Stop(); moving=false; positioned=false; target=IntPtr.Zero;
             if(locationHook!=IntPtr.Zero) { UnhookWinEvent(locationHook); locationHook=IntPtr.Zero; }
             if(moveHook!=IntPtr.Zero) { UnhookWinEvent(moveHook); moveHook=IntPtr.Zero; }
         }

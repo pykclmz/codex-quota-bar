@@ -170,8 +170,16 @@ static class WindowOrderTest
             NotifyWinEvent(0x000B,owner.Handle,0,0);
             Check(PumpUntil(()=>!follower.Moving,120),"frame fallback stops at move end");
             var last=WindowBounds(bar.Handle); enabled=false; owner.Left+=20;
-            PumpUntil(()=>false,40); Check(WindowBounds(bar.Handle)==last,"paused/hidden overlay is not moved"); enabled=true;
-            owner.Width+=80; Check(PumpUntil(()=>invalidated>1,120),"resize invalidates old input geometry");
+            PumpUntil(()=>false,40); Check(WindowBounds(bar.Handle)==last,"paused/hidden overlay is not moved");
+            NotifyWinEvent(0x000A,owner.Handle,0,0);
+            Check(PumpUntil(()=>follower.Moving,120) && !follower.FrameTimerActive,"hidden overlay tracks resize lifecycle without starting a frame timer");
+            NotifyWinEvent(0x000B,owner.Handle,0,0);
+            Check(PumpUntil(()=>!follower.Moving,120) && !follower.FrameTimerActive,"hidden resize completion releases motion state");
+            NotifyWinEvent(0x000A,owner.Handle,0,0);
+            Check(PumpUntil(()=>follower.Moving,120),"begin move for missing-end recovery");
+            Check(PumpUntil(()=>{follower.SynchronizeMotion();return !follower.Moving;},600) && !follower.FrameTimerActive,"native idle state recovers a lost move-end event and stops the frame timer");
+            enabled=true; int beforeResize=invalidated;
+            owner.Width+=80; Check(PumpUntil(()=>invalidated>beforeResize,120),"resize invalidates old input geometry");
             Check(WindowBounds(bar.Handle)==last,"resize never reuses stale relative position");
             replacement.Bounds=new Rectangle(-17000,-17000,800,500); replacement.Show(); Application.DoEvents();
             follower.Attach(replacement.Handle);
@@ -187,6 +195,37 @@ static class WindowOrderTest
             Check(!follower.EventsAvailable && !follower.Moving && WindowBounds(bar.Handle)==last,"detach stops event handling and timer");
         }
     }
+    static void ResponsiveMovementCase()
+    {
+        var foreground=GetForegroundWindow();
+        using(var owner=new TestWindow())
+        using(var bar=new TestWindow()) {
+            owner.Bounds=new Rectangle(-18000,-18000,1600,1000);
+            owner.Show(); bar.Show(); Application.DoEvents();
+            var ownerRect=WindowBounds(owner.Handle); int dpi=CodexQuotaBar.Native.Dpi(owner.Handle);
+            var anchor=new CodexQuotaBar.ComposerAnchor { Owner=ownerRect,Dpi=dpi,
+                Editor=new Rectangle(ownerRect.Left+400,ownerRect.Bottom-160,1000,80),
+                Slot=new Rectangle(ownerRect.Left+600,ownerRect.Bottom-60,500,40) };
+            CodexQuotaBar.WindowFollower follower=null;
+            Action layout=delegate {
+                var next=WindowBounds(owner.Handle); var projected=anchor.Project(next,dpi);
+                if(projected==null) throw new Exception("No live resize projection");
+                var bounds=CodexQuotaBar.QuotaPlacement.Fit(projected.Slot,new Size(200,28),1,0,0);
+                CodexQuotaBar.Native.PlaceAboveTarget(bar.Handle,owner.Handle,bounds);
+                follower.RememberPlacement(next,dpi,bounds);
+            };
+            using(follower=new CodexQuotaBar.WindowFollower(bar,()=>bar.Visible,layout)) {
+                follower.Attach(owner.Handle); layout();
+                for(int step=0;step<24;step++) {
+                    owner.Bounds=new Rectangle(-18000+step*4,-18000+step*2,1600-step*9,1000-step*5);
+                    var next=WindowBounds(owner.Handle); var projected=anchor.Project(next,dpi);
+                    var expected=CodexQuotaBar.QuotaPlacement.Fit(projected.Slot,new Size(200,28),1,0,0);
+                    Check(PumpUntil(()=>WindowBounds(bar.Handle)==expected,150) && IsWindowVisible(bar.Handle),"continuous resize stays visible at toolbar frame "+step);
+                }
+                Check(GetForegroundWindow()==foreground && !Topmost(bar.Handle),"live resize keeps focus and input-candidate ordering unchanged");
+            }
+        }
+    }
     [STAThread] static int Main(string[] args)
     {
         string report = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "window-order-result.json");
@@ -200,7 +239,7 @@ static class WindowOrderTest
                 if (place == null) throw new Exception("Missing production window-order method");
             }
             CandidateCase(true); CandidateCase(false); DemotionCase(); WatcherLoopCase();
-            if(!baseline) MovementCase();
+            if(!baseline) { MovementCase(); ResponsiveMovementCase(); }
             File.WriteAllText(report, new JavaScriptSerializer().Serialize(new { passed = true, checks = checks }));
             return 0;
         }

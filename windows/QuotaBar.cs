@@ -15,8 +15,8 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.5.0")]
 
 namespace CodexQuotaBar
 {
@@ -180,30 +180,93 @@ namespace CodexQuotaBar
     sealed class ComposerAnchor
     {
         public Rectangle Editor;
+        public Rectangle Toolbar;
         public Rectangle Slot;
         public Rectangle Owner;
+        public Rectangle Viewport;
+        public double EditorLimit;
         public int Dpi;
         public string Mode;
         public List<object> Controls = new List<object>();
-        public bool Valid { get { return !Editor.IsEmpty && Slot.Width > 0 && Slot.Height > 0; } }
+        public bool Valid { get { return (!Editor.IsEmpty || !Toolbar.IsEmpty) && Slot.Width > 0 && Slot.Height > 0 && Dpi>0 &&
+            (Editor.IsEmpty || Owner.Contains(Editor)) && (Toolbar.IsEmpty || Owner.Contains(Toolbar)) && Owner.Contains(Slot); } }
+        public Rectangle Layout { get { return Editor.IsEmpty ? Toolbar : Editor; } }
         public Rectangle SlotAt(Rectangle owner) { return new Rectangle(owner.Left+Slot.Left-Owner.Left,owner.Top+Slot.Top-Owner.Top,Slot.Width,Slot.Height); }
         public bool Matches(Rectangle owner, int dpi) { return Owner.Size==owner.Size && Dpi==dpi; }
+        public ComposerAnchor Project(Rectangle owner,int dpi)
+        {
+            if(!Valid || dpi<=0) return null;
+            double ratio=dpi/(double)Dpi;
+            var basis=Layout;
+            // The content pane keeps its sidebar inset, the composer stays centered
+            // within that pane, and the toolbar stays at its bottom edge. Projection
+            // is temporary and never replaces an accessibility-validated anchor.
+            var pane=Viewport;
+            if(pane.IsEmpty || !Owner.Contains(pane)) {
+                int inset=Math.Max(0,2*(basis.Left-Owner.Left)+basis.Width-Owner.Width);
+                pane=Rectangle.FromLTRB(Owner.Left+inset,Owner.Top,Owner.Right,Owner.Bottom);
+            }
+            int left=owner.Left+(int)Math.Round((pane.Left-Owner.Left)*ratio);
+            int right=owner.Right-(int)Math.Round((Owner.Right-pane.Right)*ratio);
+            int padding=(int)Math.Round(Math.Min(32*Dpi/96.0,Math.Max(0,Math.Min(basis.Left-pane.Left,pane.Right-basis.Right)))*ratio);
+            int maximum=(int)Math.Round(EditorLimit>0 ? EditorLimit*dpi/96.0 : basis.Width*ratio);
+            int width=Math.Min(maximum,right-left-2*padding);
+            if(width<=0) return null;
+            int centerShift=(int)Math.Round(((basis.Left+basis.Right-pane.Left-pane.Right)/2.0)*ratio);
+            // An inferred pane already encodes the sidebar offset.
+            if(Viewport.IsEmpty) centerShift=0;
+            int x=(left+right-width)/2+centerShift;
+            x=Math.Max(left+padding,Math.Min(x,right-padding-width));
+            var editor=new Rectangle(x,owner.Bottom-(int)Math.Round((Owner.Bottom-basis.Top)*ratio),width,(int)Math.Round(basis.Height*ratio));
+            var slot=Rectangle.FromLTRB(editor.Left+(int)Math.Round((Slot.Left-basis.Left)*ratio),
+                owner.Bottom-(int)Math.Round((Owner.Bottom-Slot.Top)*ratio),
+                editor.Right-(int)Math.Round((basis.Right-Slot.Right)*ratio),
+                owner.Bottom-(int)Math.Round((Owner.Bottom-Slot.Bottom)*ratio));
+            var projected=new ComposerAnchor { Owner=owner,Dpi=dpi,Editor=Editor.IsEmpty ? Rectangle.Empty : editor,
+                Toolbar=Editor.IsEmpty ? editor : Rectangle.Empty,Slot=slot,Mode="motion-projection" };
+            return projected.Valid ? projected : null;
+        }
     }
 
     sealed class AnchorCache
     {
         public ComposerAnchor Current;
         public DateTime ValidatedUtc = DateTime.MinValue;
+        bool translating;
+        DateTime translationGraceUtc = DateTime.MinValue;
         public bool Update(ComposerAnchor found, Rectangle owner, int dpi, DateTime now)
         {
-            if (found == null || !found.Valid || !found.Matches(owner, dpi)) return false;
+            // A completed query must match its complete capture frame, including origin.
+            // Existing, already validated anchors may still be translated during a drag.
+            if (found == null || !found.Valid || found.Owner!=owner || !found.Matches(owner, dpi)) return false;
+            // Chromium may report yesterday's child layout with today's native
+            // window frame after maximize/DPI changes. A bottom toolbar cannot
+            // suddenly acquire a large bottom inset during that transition.
+            if(Current!=null && !Current.Matches(owner,dpi)) {
+                double oldTop=Current.Slot.Top-Current.Owner.Top,newTop=found.Slot.Top-owner.Top;
+                bool oldCoordinates=Math.Abs(oldTop*96.0/Current.Dpi-newTop*96.0/dpi)<=8 || Math.Abs(oldTop-newTop)<=8*dpi/96.0;
+                if(oldCoordinates && Math.Abs((Current.Owner.Bottom-Current.Slot.Bottom)*96.0/Current.Dpi-
+                    (owner.Bottom-found.Slot.Bottom)*96.0/dpi)>8) return false;
+            }
+            found.EditorLimit=found.Layout.Width*96.0/dpi;
+            if(Current!=null && Math.Abs(Current.Slot.Height/(double)Current.Dpi-found.Slot.Height/(double)dpi)<0.01)
+                found.EditorLimit=Math.Max(found.EditorLimit,Current.EditorLimit);
             Current = found; ValidatedUtc = now; return true;
         }
+        public void BeginTranslation(DateTime now) { translating=Current!=null && Usable(Current.Owner,Current.Dpi,now); }
+        public void EndTranslation(DateTime now) { if(translating) translationGraceUtc=now.AddSeconds(2); translating=false; }
         public bool Usable(Rectangle owner, int dpi, DateTime now)
         {
-            return Current != null && Current.Matches(owner, dpi) && now >= ValidatedUtc && now-ValidatedUtc <= TimeSpan.FromSeconds(6);
+            return Current != null && Current.Matches(owner, dpi) && now >= ValidatedUtc &&
+                (translating || now<=translationGraceUtc || now-ValidatedUtc <= TimeSpan.FromSeconds(6));
         }
-        public void Clear() { Current = null; ValidatedUtc = DateTime.MinValue; }
+        public void Clear() { Current = null; ValidatedUtc = DateTime.MinValue; translating=false; translationGraceUtc=DateTime.MinValue; }
+        public ComposerAnchor ForFrame(Rectangle owner,int dpi,DateTime now,bool transitioning)
+        {
+            if(Usable(owner,dpi,now)) return Current;
+            if((transitioning || now<=translationGraceUtc) && Current!=null && Usable(Current.Owner,Current.Dpi,now)) return Current.Project(owner,dpi);
+            return null;
+        }
     }
 
     sealed class RetrySchedule
@@ -248,6 +311,7 @@ namespace CodexQuotaBar
         public string LastResult="not-started";
         public async Task<ComposerAnchor> Read(IntPtr window)
         {
+            Process activeWorker=null;
             try {
                 if(worker==null || worker.HasExited) {
                     worker=Process.Start(new ProcessStartInfo(Path.Combine(Program.Root,"CodexQuotaBar.exe"),"--anchor-worker "+Process.GetCurrentProcess().Id) {
@@ -255,13 +319,16 @@ namespace CodexQuotaBar
                         StandardOutputEncoding=Encoding.UTF8,WorkingDirectory=Program.Root });
                     worker.StandardInput.AutoFlush=true;
                 }
-                worker.StandardInput.WriteLine(window.ToInt64());
-                var read=worker.StandardOutput.ReadLineAsync();
-                if(await Task.WhenAny(read,Task.Delay(5000))!=read) { LastResult="timeout"; Dispose(); return null; }
-                var line=await read; if(line==null) { LastResult="worker-exited"; Dispose(); return null; }
+                activeWorker=worker;
+                activeWorker.StandardInput.WriteLine(window.ToInt64());
+                var read=activeWorker.StandardOutput.ReadLineAsync();
+                if(await Task.WhenAny(read,Task.Delay(5000))!=read) { if(worker==activeWorker) { LastResult="timeout"; Dispose(); } return null; }
+                var line=await read;
+                if(worker!=activeWorker) return null;
+                if(line==null) { LastResult="worker-exited"; Dispose(); return null; }
                 var result=new JavaScriptSerializer().Deserialize<ComposerAnchor>(line);
-                LastResult=result.Valid ? "located" : "no-editor-or-toolbar"; return result;
-            } catch(Exception e) { LastResult=e.GetType().Name; Dispose(); return null; }
+                LastResult=result.Valid ? "located" : result.Mode ?? "no-editor-or-toolbar"; return result;
+            } catch(Exception e) { if(worker==activeWorker) { LastResult=e.GetType().Name; Dispose(); } return null; }
         }
         public void Dispose()
         {
@@ -274,6 +341,20 @@ namespace CodexQuotaBar
 
     static class QuotaPlacement
     {
+        public static Rectangle ClipToDisplays(Rectangle slot,IEnumerable<Rectangle> workAreas)
+        {
+            // A wide Codex window may belong to one monitor while its composer is on another.
+            // Fit the toolbar slot itself to a real display, not the owner's primary display.
+            var pieces=workAreas.Select(area=>Rectangle.Intersect(slot,area)).Where(r=>r.Width>0 && r.Height>0).OrderBy(r=>r.Left).ToList();
+            // Adjacent monitors form one usable strip. Cutting at the monitor seam
+            // made the overlay jump to whichever half was larger during a drag.
+            var strips=new List<Rectangle>();
+            foreach(var piece in pieces) {
+                int merge=strips.FindIndex(r=>r.Top==piece.Top && r.Bottom==piece.Bottom && piece.Left<=r.Right && piece.Right>=r.Left);
+                if(merge<0) strips.Add(piece); else strips[merge]=Rectangle.Union(strips[merge],piece);
+            }
+            return strips.OrderByDescending(r=>r.Height==slot.Height).ThenByDescending(r=>(long)r.Width*r.Height).FirstOrDefault();
+        }
         public static Rectangle Fit(Rectangle slot, Size size, double scale, double offsetX, double offsetY)
         {
             if(size.Width>slot.Width || size.Height>slot.Height || size.Width<=0 || size.Height<=0) return Rectangle.Empty;
@@ -399,13 +480,22 @@ namespace CodexQuotaBar
                     if (b.IsEmpty) continue;
                     var candidate = Rectangle.FromLTRB((int)b.Left, (int)b.Top, (int)b.Right, (int)b.Bottom);
                     if (candidate.Width < 180 || candidate.Height < 22 || candidate.Height > r.Height * 0.4 || candidate.Top < r.Top + r.Height * 0.5 || candidate.Bottom > r.Bottom - 12) continue;
-                    if (candidate.Top > best.Top) { best = candidate; bestElement=edit; }
+                    if (best.IsEmpty || candidate.Top > best.Top) { best = candidate; bestElement=edit; }
                 }
                 result.Editor = best;
-                if (best.IsEmpty) return result;
+                var panel=bestElement;
+                for(int depth=0;panel!=null && depth<12;depth++) {
+                    panel=TreeWalker.ControlViewWalker.GetParent(panel);
+                    if(panel==null || panel==root) break;
+                    var panelBounds=panel.Current.BoundingRectangle;
+                    if(panelBounds.IsEmpty) continue;
+                    var pane=Rectangle.FromLTRB((int)panelBounds.Left,(int)panelBounds.Top,(int)panelBounds.Right,(int)panelBounds.Bottom);
+                    if(pane.Contains(best) && r.Contains(pane) && pane.Width>best.Width+20*result.Dpi/96.0 && pane.Height>r.Height*.5 &&
+                        (pane.Left>r.Left+8 || pane.Right<r.Right-8)) { result.Viewport=pane; break; }
+                }
                 // Prefer the composer's containing group instead of querying every chat action button.
                 var scope=root; var ancestor=bestElement;
-                for(int depth=0;depth<6;depth++) {
+                for(int depth=0;ancestor!=null && depth<6;depth++) {
                     ancestor=TreeWalker.ControlViewWalker.GetParent(ancestor);
                     if(ancestor==null) break;
                     var b=ancestor.Current.BoundingRectangle;
@@ -420,21 +510,34 @@ namespace CodexQuotaBar
                         var b = button.Cached.BoundingRectangle;
                         if (b.IsEmpty) continue;
                         var rect = Rectangle.FromLTRB((int)b.Left,(int)b.Top,(int)b.Right,(int)b.Bottom);
-                        if (rect.Width<=0 || rect.Height<=0 || rect.Left < best.Left-30 || rect.Right>best.Right+30 || rect.Top<best.Bottom-8 || rect.Bottom>r.Bottom || rect.Height>100) continue;
+                        if (rect.Width<=0 || rect.Height<=0 || !r.Contains(rect) || rect.Height>100) continue;
+                        if(!best.IsEmpty && (rect.Left < best.Left-30 || rect.Right>best.Right+30 || rect.Top<best.Bottom-8)) continue;
+                        if(best.IsEmpty && rect.Top<r.Bottom-160*result.Dpi/96.0) continue;
                         string name = button.Current.Name ?? "";
                         candidates.Add(Tuple.Create(name,rect));
                         result.Controls.Add(new { name = name, left = rect.Left, top = rect.Top, right = rect.Right, bottom = rect.Bottom });
                     } catch { }
                 }
-                var permissions = candidates.FirstOrDefault(p => p.Item1.Contains("帮我批准") || p.Item1.Contains("权限") || p.Item1.IndexOf("approval",StringComparison.OrdinalIgnoreCase)>=0 || p.Item1.IndexOf("permission",StringComparison.OrdinalIgnoreCase)>=0);
+                var permissions = candidates.FirstOrDefault(p => best.IsEmpty ?
+                    (p.Item1=="更改权限" || p.Item1=="帮我批准" || p.Item1.IndexOf("change permissions",StringComparison.OrdinalIgnoreCase)>=0 || p.Item1.Equals("Permissions",StringComparison.OrdinalIgnoreCase)) :
+                    (p.Item1.Contains("帮我批准") || p.Item1.Contains("权限") || p.Item1.IndexOf("approval",StringComparison.OrdinalIgnoreCase)>=0 || p.Item1.IndexOf("permission",StringComparison.OrdinalIgnoreCase)>=0));
                 if(permissions != null) {
                     var p = permissions.Item2;
                     var right = candidates.Where(c => c.Item2.Left>p.Right+5 && Math.Abs((c.Item2.Top+c.Item2.Bottom)-(p.Top+p.Bottom))<Math.Max(c.Item2.Height,p.Height)).OrderBy(c=>c.Item2.Left).FirstOrDefault();
                     int gap = (int)(8*result.Dpi/96.0);
-                    result.Slot = Rectangle.FromLTRB(p.Right+gap,p.Top,right == null ? best.Right-gap : right.Item2.Left-gap,p.Bottom);
-                    result.Mode = "permission-toolbar";
+                    var row=candidates.Where(c=>Math.Abs((c.Item2.Top+c.Item2.Bottom)-(p.Top+p.Bottom))<p.Height).ToList();
+                    if(!best.IsEmpty || (right!=null && row.Count>=3)) {
+                        result.Slot = Rectangle.FromLTRB(p.Right+gap,p.Top,right == null ? best.Right-gap : right.Item2.Left-gap,p.Bottom);
+                        result.Mode = best.IsEmpty ? "permission-toolbar-only" : "permission-toolbar";
+                        if(best.IsEmpty) {
+                            // The edit node may disappear while React replaces a chat.
+                            // Fresh permission + neighboring toolbar buttons still
+                            // provide actual, independent evidence of the composer.
+                            result.Toolbar=row.Select(c=>c.Item2).Aggregate(Rectangle.Union);
+                        }
+                    }
                 }
-                else if(candidates.Count>1) {
+                else if(!best.IsEmpty && candidates.Count>1) {
                     // Alternate language/label: use the largest actual gap in the bottom button row.
                     var bottom = candidates.OrderByDescending(c=>c.Item2.Bottom).First().Item2;
                     var row = candidates.Where(c=>Math.Abs((c.Item2.Top+c.Item2.Bottom)-(bottom.Top+bottom.Bottom))<bottom.Height).OrderBy(c=>c.Item2.Left).ToList();
@@ -446,9 +549,14 @@ namespace CodexQuotaBar
                     }
                     result.Mode="toolbar-gap";
                 }
+                if(result.Mode==null) result.Mode=best.IsEmpty ? "no-editor-or-toolbar" : "no-toolbar";
+                Rect completed;
+                if(!GetWindowRect(window,out completed) || completed.ToRectangle()!=r || Dpi(window)!=result.Dpi) {
+                    result.Slot=Rectangle.Empty; result.Mode="geometry-changed-during-read";
+                }
                 return result;
                 }
-            } catch { return result; }
+            } catch { result.Slot=Rectangle.Empty; result.Mode="provider-error"; return result; }
         }
     }
 
@@ -859,6 +967,13 @@ namespace CodexQuotaBar
         int detailLevel = 2;
         Rectangle currentSlot;
         DateTime anchorChecked = DateTime.MinValue;
+        DateTime anchorRequestedUtc = DateTime.MinValue;
+        DateTime geometryChangedUtc = DateTime.MinValue;
+        int anchorRequest, rejectedAnchors;
+        bool ownerWasMoving;
+        string visibilityReason="starting";
+        readonly Queue<object> positionHistory=new Queue<object>();
+        DateTime historyWrittenUtc=DateTime.MinValue;
         DateTime lastWindowSearch = DateTime.MinValue;
         bool anchorBusy, refreshing, paused, dragging, closing;
         string status = "正在读取 Codex 额度…";
@@ -890,6 +1005,7 @@ namespace CodexQuotaBar
             try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) light = Convert.ToInt32(k.GetValue("AppsUseLightTheme", 0)) == 1; } catch { }
             surface = light ? Color.FromArgb(249,249,249) : Color.FromArgb(33,33,33);
             codexSurface=surface;
+            MouseCaptureChanged += delegate { if(dragging && !Capture) { dragging=false; if(!closing) Track(); } };
             tracker.Tick += delegate { Track(); };
             refresh.Tick += async delegate { if(DateTime.UtcNow >= retry.DueUtc && Native.IsCodex(target)) await RefreshQuota(); };
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -964,7 +1080,9 @@ namespace CodexQuotaBar
                         if(action=="quota_refresh" && view.Error!=null) { completion.TrySetResult(new { error=view.Error }); return; }
                         var text=view.Preview+(view.Stale ? "\n数据待更新" : "")+(view.Updated.HasValue ? "\n上次更新 "+view.Updated.Value.ToString("MM/dd HH:mm:ss") : "");
                         completion.TrySetResult(new { text=text,data=new { preview=view.Preview,stale=view.Stale,updated=view.Updated.HasValue ? view.Updated.Value.ToString("o") : null,paused=view.Paused,
-                            running=true,visible=Visible,targetFound=view.TargetFound,inputLocated=composerAnchor!=null && composerAnchor.Valid } });
+                            running=true,visible=Visible,targetFound=view.TargetFound,inputLocated=anchorCache.Usable(lastOwner,lastDpi,DateTime.UtcNow),
+                            diagnostics=new { version=Program.Version,reason=visibilityReason,anchorResult=anchorReader.LastResult,rejectedAnchors=rejectedAnchors,
+                                moving=follower.Moving,dpi=lastDpi,owner=lastOwner,slot=currentSlot,bounds=Bounds,history=positionHistory.ToArray() } } });
                     } else completion.TrySetResult(new { error="未知操作。" });
                 } catch(ArgumentException e) { completion.TrySetResult(new { error=e.Message }); }
                 catch { completion.TrySetResult(new { error="设置未能完成，请重试。" }); }
@@ -1058,7 +1176,7 @@ namespace CodexQuotaBar
             if (args.Mode != PowerModes.Resume || closing || !IsHandleCreated) return;
             try { BeginInvoke((Action)delegate {
                 if (closing) return;
-                anchorCache.Clear(); anchorChecked = DateTime.MinValue; retry.Reset();
+                InvalidateAnchor(); retry.Reset();
                 surfaceChecked = DateTime.MinValue; lastWindowSearch = DateTime.MinValue;
                 ReleaseServer(); Track();
             }); } catch (InvalidOperationException) { }
@@ -1091,6 +1209,25 @@ namespace CodexQuotaBar
         }
         bool Stale { get { return snapshot != null && (error != null || DateTime.Now - snapshot.Updated > TimeSpan.FromMinutes(3)); } }
         string Display { get { return status + (Stale ? "  ·  数据待更新" : ""); } }
+        void CancelAnchorRead()
+        {
+            anchorRequest++; anchorBusy=false; anchorReader.Dispose();
+        }
+        void InvalidateAnchor()
+        {
+            CancelAnchorRead(); anchorCache.Clear(); currentSlot=Rectangle.Empty; anchorChecked=DateTime.MinValue; anchorRequestedUtc=DateTime.MinValue;
+        }
+        static object PositionRect(Rectangle rect) { return new { x=rect.X,y=rect.Y,width=rect.Width,height=rect.Height }; }
+        void RecordPosition(string reason,bool force=false)
+        {
+            var now=DateTime.UtcNow;
+            if(!force && now-historyWrittenUtc<TimeSpan.FromMilliseconds(100)) return;
+            historyWrittenUtc=now;
+            if(positionHistory.Count>=80) positionHistory.Dequeue();
+            positionHistory.Enqueue(new { at=now.ToString("o"),reason=reason,moving=follower.Moving,dpi=lastDpi,
+                owner=PositionRect(lastOwner),slot=PositionRect(currentSlot),bar=PositionRect(Bounds),anchor=anchorReader.LastResult });
+        }
+        void HideFor(string reason) { if(visibilityReason!=reason) RecordPosition(reason,true); visibilityReason=reason; if(Visible) Hide(); }
         void UpdateText()
         {
             var detail = Display;
@@ -1144,22 +1281,37 @@ namespace CodexQuotaBar
             tracker.Interval = active || dragging ? 250 : target == IntPtr.Zero ? 2000 : 1000;
             if (active && !wasActive && (snapshot == null || DateTime.Now-snapshot.Updated >= TimeSpan.FromSeconds(60))) retry.Reset();
             wasActive = active;
-            if (target == IntPtr.Zero || paused || Native.IsIconic(target) || (foreground != target && foreground != Handle)) { if (Visible) Hide(); return; }
-            Native.Rect nativeRect; if (!Native.GetWindowRect(target, out nativeRect)) { Hide(); return; }
-            var rect = nativeRect.ToRectangle(); if (rect.Width < 250 || rect.Height < 200) { Hide(); return; }
+            var now=DateTime.UtcNow;
+            follower.SynchronizeMotion();
+            if(ownerWasMoving!=follower.Moving) {
+                ownerWasMoving=follower.Moving;
+                if(ownerWasMoving) anchorCache.BeginTranslation(now);
+                else { anchorCache.EndTranslation(now); anchorChecked=DateTime.MinValue; }
+                RecordPosition(ownerWasMoving ? "move-start" : "move-end",true);
+            }
+            if (target == IntPtr.Zero || paused || Native.IsIconic(target) || (foreground != target && foreground != Handle)) {
+                HideFor(target==IntPtr.Zero ? "no-codex-window" : paused ? "paused" : Native.IsIconic(target) ? "minimized" : "not-foreground"); return;
+            }
+            Native.Rect nativeRect; if (!Native.GetWindowRect(target, out nativeRect)) { HideFor("window-unavailable"); return; }
+            var rect = nativeRect.ToRectangle(); if (rect.Width < 250 || rect.Height < 200) { HideFor("window-too-small"); return; }
             var dpi = Native.Dpi(target);
+            bool geometryChanged=lastOwner!=rect || lastDpi!=dpi;
             if(lastOwner.Size!=rect.Size || lastDpi!=dpi) {
-                anchorCache.Clear(); currentSlot=Rectangle.Empty; anchorChecked=DateTime.MinValue;
-                if(Visible) Hide();
+                // Keep the last validated layout for temporary projection. Outstanding
+                // reads are checked against the current frame when they complete.
+                geometryChangedUtc=now; anchorChecked=DateTime.MinValue;
             }
             lastOwner=rect; lastDpi=dpi;
-            if(!anchorBusy && DateTime.UtcNow-anchorChecked>TimeSpan.FromMilliseconds(composerAnchor == null ? 600 : 1500)) ReadAnchor(target);
-            if(!anchorCache.Usable(rect,dpi,DateTime.UtcNow)) { if(Visible) Hide(); return; }
-            currentSlot=Rectangle.Intersect(composerAnchor.SlotAt(rect),rect);
-            currentSlot=Rectangle.Intersect(currentSlot,Screen.FromHandle(target).WorkingArea);
-            if(currentSlot.IsEmpty) { Hide(); return; }
+            bool transitioning=follower.Moving || now-geometryChangedUtc<TimeSpan.FromSeconds(2);
+            if(!anchorBusy && now-anchorRequestedUtc>=TimeSpan.FromMilliseconds(250) &&
+                now-anchorChecked>TimeSpan.FromMilliseconds(transitioning ? 250 : composerAnchor == null ? 600 : 1500)) ReadAnchor(target);
+            var frameAnchor=anchorCache.ForFrame(rect,dpi,now,transitioning);
+            if(frameAnchor==null) { HideFor("waiting-for-input"); return; }
+            currentSlot=Rectangle.Intersect(frameAnchor.SlotAt(rect),rect);
+            currentSlot=QuotaPlacement.ClipToDisplays(currentSlot,Screen.AllScreens.Select(s=>s.WorkingArea));
+            if(currentSlot.IsEmpty) { HideFor("input-offscreen"); return; }
             // Toolbar geometry also responds to the app's zoom, unlike monitor DPI alone.
-            scale = Math.Max(0.75,Math.Min(3,composerAnchor.Slot.Height/28.0));
+            scale = Math.Max(0.75,Math.Min(3,frameAnchor.Slot.Height/28.0));
             int height = (int)(26 * scale);
             if (Math.Abs(Font.Size - 12 * scale) > 0.1) { var old = Font; Font = new Font("Microsoft YaHei UI", (float)(12 * scale), FontStyle.Regular, GraphicsUnit.Pixel); old.Dispose(); }
             var quotaWindows = snapshot == null ? new List<QuotaWindow>() : snapshot.Windows(settings.Bucket);
@@ -1173,9 +1325,9 @@ namespace CodexQuotaBar
                 }
                 if(width<=currentSlot.Width) break;
             }
-            if(detailLevel<0) { Hide(); return; }
+            if(detailLevel<0) { HideFor("toolbar-too-narrow"); return; }
             var placement=QuotaPlacement.Fit(currentSlot,new Size(width,height),scale,settings.AnchorOffsetX,settings.AnchorOffsetY);
-            if(placement.IsEmpty) { Hide(); return; }
+            if(placement.IsEmpty) { HideFor("toolbar-too-small"); return; }
             int x=placement.Left,y=placement.Top;
             if(previousDetail!=detailLevel) Invalidate();
             if (Bounds != new Rectangle(x, y, width, height)) {
@@ -1194,13 +1346,16 @@ namespace CodexQuotaBar
                 if (next != surface) { surface = next; Invalidate(); }
             }
             if (!Visible) Show();
+            string reason=frameAnchor.Mode=="motion-projection" ? "visible-projected" : "visible";
+            if(geometryChanged || visibilityReason!=reason) RecordPosition(reason,visibilityReason!=reason);
+            visibilityReason=reason;
             Native.PlaceAboveTarget(Handle, target, new Rectangle(x, y, width, height));
             follower.RememberPlacement(rect,dpi,new Rectangle(x,y,width,height));
         }
         void SetTarget(IntPtr window)
         {
             bool changed = target != window;
-            target = window; anchorCache.Clear(); currentSlot = Rectangle.Empty; anchorChecked = DateTime.MinValue;
+            target = window; InvalidateAnchor(); ownerWasMoving=false;
             lastOwner=Rectangle.Empty; lastDpi=0;
             Native.Owner(Handle, window);
             follower.Attach(window);
@@ -1208,18 +1363,21 @@ namespace CodexQuotaBar
         }
         async void ReadAnchor(IntPtr window)
         {
-            anchorBusy = true; anchorChecked = DateTime.UtcNow;
+            int request=++anchorRequest;
+            anchorBusy = true; anchorChecked = DateTime.UtcNow; anchorRequestedUtc=anchorChecked;
             try {
                 // The accessibility provider can stall; never block the UI or queue more probes.
                 var found = await anchorReader.Read(window);
-                if (closing || target != window) return;
+                if (closing || target != window || request!=anchorRequest) return;
                 Native.Rect wr;
                 var previous = composerAnchor;
                 if (Native.GetWindowRect(window, out wr) && anchorCache.Update(found, wr.ToRectangle(), Native.Dpi(window), DateTime.UtcNow)) {
                     if(previous==null || previous.Slot!=found.Slot) surfaceChecked=DateTime.MinValue;
-                }
-            } finally { anchorBusy = false; }
-            if(!closing) Track();
+                    anchorChecked=DateTime.UtcNow;
+                    if(previous==null || previous.Owner.Size!=found.Owner.Size || previous.Dpi!=found.Dpi) RecordPosition("anchor-validated",true);
+                } else { rejectedAnchors++; anchorChecked=DateTime.UtcNow.AddMilliseconds(-400); RecordPosition("anchor-rejected",true); }
+            } finally { if(request==anchorRequest) anchorBusy = false; }
+            if(!closing && request==anchorRequest) Track();
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1228,7 +1386,7 @@ namespace CodexQuotaBar
         protected override void OwnerWindowClosed()
         {
             if (closing) return;
-            target = IntPtr.Zero; anchorCache.Clear(); currentSlot = Rectangle.Empty;
+            target = IntPtr.Zero; InvalidateAnchor(); ownerWasMoving=false;
             follower.Attach(IntPtr.Zero);
             lastWindowSearch = DateTime.MinValue; anchorChecked = DateTime.MinValue; wasActive = false;
             ReleaseServer();
@@ -1255,7 +1413,7 @@ namespace CodexQuotaBar
 
     static class Program
     {
-        public const string Version = "1.3.2-local";
+        public const string Version = "1.3.5-local";
         public static string Root = AppDomain.CurrentDomain.BaseDirectory;
         public static EventWaitHandle StopSignal;
         public static EventWaitHandle SettingsSignal;
