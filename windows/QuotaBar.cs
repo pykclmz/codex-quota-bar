@@ -15,8 +15,8 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
 
 namespace CodexQuotaBar
 {
@@ -729,6 +729,98 @@ namespace CodexQuotaBar
         }
     }
 
+    static class DesktopNotifications
+    {
+        public const string AppId = "CodexQuotaBar";
+        [ComImport,Guid("00021401-0000-0000-C000-000000000046")] class ShellLink { }
+        [ComImport,Guid("000214F9-0000-0000-C000-000000000046"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IShellLink {
+            void GetPath(IntPtr path,int count,IntPtr data,int flags); void GetIDList(out IntPtr id); void SetIDList(IntPtr id);
+            void GetDescription(IntPtr text,int count); void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void GetWorkingDirectory(IntPtr text,int count); void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+            void GetArguments(IntPtr text,int count); void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void GetHotkey(out short key); void SetHotkey(short key); void GetShowCmd(out int cmd); void SetShowCmd(int cmd);
+            void GetIconLocation(IntPtr path,int count,out int index); void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path,int index);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path,int reserved); void Resolve(IntPtr window,int flags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+        }
+        [StructLayout(LayoutKind.Sequential)] struct PropertyKey { public Guid Format; public uint Id; public PropertyKey(uint id) { Format=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");Id=id; } }
+        [StructLayout(LayoutKind.Explicit,Size=24)] struct PropertyValue { [FieldOffset(0)] public ushort Type; [FieldOffset(8)] public IntPtr Value; }
+        [ComImport,Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPropertyStore {
+            void GetCount(out uint count); void GetAt(uint index,out PropertyKey key); void GetValue(ref PropertyKey key,out PropertyValue value);
+            void SetValue(ref PropertyKey key,ref PropertyValue value); void Commit();
+        }
+        public static void Register()
+        {
+            using(var key=Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppUserModelId\"+AppId)) {
+                key.SetValue("DisplayName","Codex 额度条",RegistryValueKind.String);
+                // Protocol-only toasts use a stub CLSID; no COM server is installed.
+                key.SetValue("CustomActivator","{9CB311EC-6D05-4B78-A4CD-FF3D5B9DD38A}",RegistryValueKind.String);
+            }
+            // Windows needs an identified Start-menu shortcut for desktop toasts.
+            // This shortcut opens settings; it never creates a tray icon.
+            object shortcut=new ShellLink();
+            try {
+                var link=(IShellLink)shortcut;
+                link.SetPath(Path.Combine(Program.Root,"CodexQuotaBar.exe")); link.SetArguments("--show-settings");
+                link.SetWorkingDirectory(Program.Root); link.SetDescription("Codex 额度条设置");
+                var store=(IPropertyStore)shortcut;
+                var key=new PropertyKey(5);
+                var value=new PropertyValue { Type=31,Value=Marshal.StringToCoTaskMemUni(AppId) };
+                try { store.SetValue(ref key,ref value); } finally { Marshal.FreeCoTaskMem(value.Value); }
+                key=new PropertyKey(26);
+                value=new PropertyValue { Type=72,Value=Marshal.AllocCoTaskMem(16) };
+                try { Marshal.StructureToPtr(new Guid("9CB311EC-6D05-4B78-A4CD-FF3D5B9DD38A"),value.Value,false); store.SetValue(ref key,ref value); }
+                finally { Marshal.FreeCoTaskMem(value.Value); }
+                store.Commit();
+                string folder=Environment.GetFolderPath(Environment.SpecialFolder.Programs); Directory.CreateDirectory(folder);
+                ((System.Runtime.InteropServices.ComTypes.IPersistFile)shortcut).Save(Path.Combine(folder,"Codex 额度条.lnk"),true);
+            } finally { Marshal.FinalReleaseComObject(shortcut); }
+        }
+        internal static string Xml(string title, string message)
+        {
+            return "<toast activationType=\"protocol\" launch=\"codex://\"><visual><binding template=\"ToastGeneric\"><text>"+
+                System.Security.SecurityElement.Escape(title)+"</text><text>"+
+                System.Security.SecurityElement.Escape(message)+"</text></binding></visual></toast>";
+        }
+        public static Task<bool> Show(string title, string message)
+        {
+            // Use a short-lived Windows toast host only when a notification is due.
+            // No notification-area icon or extra polling is needed.
+            return Task.Run(delegate {
+                try {
+                    Register();
+                    string payload=Convert.ToBase64String(Encoding.UTF8.GetBytes(Xml(title,message)));
+                    string script="$ErrorActionPreference='Stop'; "+
+                        "$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]; "+
+                        "$null=[Windows.UI.Notifications.ToastNotifier,Windows.UI.Notifications,ContentType=WindowsRuntime]; "+
+                        "$null=[Windows.UI.Notifications.NotificationSetting,Windows.UI.Notifications,ContentType=WindowsRuntime]; "+
+                        "$null=[Windows.UI.Notifications.ToastNotification,Windows.UI.Notifications,ContentType=WindowsRuntime]; "+
+                        "$null=[Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime]; "+
+                        "$quotaDocument=New-Object Windows.Data.Xml.Dom.XmlDocument; "+
+                        "$quotaDocument.LoadXml([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"+payload+"'))); "+
+                        "$quotaNotifier=[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('"+AppId+"'); "+
+                        "$quotaSetting=$null; try { $quotaSetting=$quotaNotifier.GetType().GetProperty('Setting').GetValue($quotaNotifier,$null) } "+
+                        "catch { if($_.Exception.GetBaseException().HResult -ne -2147023728) { throw } }; "+
+                        "if($null -ne $quotaSetting -and $quotaSetting -ne [Windows.UI.Notifications.NotificationSetting]::Enabled) { exit 2 }; "+
+                        "$quotaToast=[Windows.UI.Notifications.ToastNotification]::new($quotaDocument); "+
+                        "$quotaToast.Tag='quota'; $quotaNotifier.Show($quotaToast);";
+                    var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe"),
+                        "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(script))) {
+                        UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden
+                    };
+                    using(var host=Process.Start(start)) {
+                        if(!host.WaitForExit(15000)) { host.Kill(); Program.LogLifecycle("notification-timeout"); return false; }
+                        if(host.ExitCode==0) return true;
+                        Program.LogLifecycle(host.ExitCode==2 ? "notification-disabled-in-windows" : "notification-send-failed");
+                    }
+                } catch(Exception e) { Program.LogLifecycle("notification-failed "+e.GetType().Name); }
+                return false;
+            });
+        }
+    }
+
     class OverlayWindow : Form
     {
         protected override void OnHandleDestroyed(EventArgs e)
@@ -746,7 +838,6 @@ namespace CodexQuotaBar
     sealed class Bar : OverlayWindow
     {
         readonly Settings settings = Settings.Load();
-        readonly NotifyIcon tray = new NotifyIcon();
         SettingsWindow settingsWindow;
         SettingsBridge settingsBridge;
         bool autoStartEnabled;
@@ -799,9 +890,6 @@ namespace CodexQuotaBar
             try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) light = Convert.ToInt32(k.GetValue("AppsUseLightTheme", 0)) == 1; } catch { }
             surface = light ? Color.FromArgb(249,249,249) : Color.FromArgb(33,33,33);
             codexSurface=surface;
-            tray.Icon = SystemIcons.Information; tray.Text = "Codex 额度条：正在连接"; tray.Visible = true;
-            tray.MouseUp += delegate(object sender, MouseEventArgs e) { if(e.Button==MouseButtons.Right) OpenLocalSettings(); };
-            tray.DoubleClick += delegate { OpenSettings(); };
             tracker.Tick += delegate { Track(); };
             refresh.Tick += async delegate { if(DateTime.UtcNow >= retry.DueUtc && Native.IsCodex(target)) await RefreshQuota(); };
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -827,7 +915,7 @@ namespace CodexQuotaBar
                 Hide(); tracker.Start(); refresh.Start(); Program.LogLifecycle("watcher-ready " + Program.Version); Track();
                 settingsBridge=new SettingsBridge(DispatchSettings);
                 if (Program.OpenSettingsAtStartup) OpenSettings();
-                if (settings.Notice != null) tray.ShowBalloonTip(5000,"Codex 额度条",settings.Notice,ToolTipIcon.Warning);
+                if (settings.Notice != null) DesktopNotifications.Show("Codex 额度条",settings.Notice);
             };
         }
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -837,7 +925,7 @@ namespace CodexQuotaBar
             bool saved = settings.Save();
             if (!saved && DateTime.UtcNow-lastSaveWarning > TimeSpan.FromSeconds(30)) {
                 lastSaveWarning = DateTime.UtcNow;
-                tray.ShowBalloonTip(5000,"设置未保存","请检查程序目录的写入权限或磁盘空间；本次设置暂时生效。",ToolTipIcon.Warning);
+                DesktopNotifications.Show("设置未保存","请检查程序目录的写入权限或磁盘空间；本次设置暂时生效。");
                 Program.LogLifecycle("settings-save-failed " + settings.SaveError);
             }
             return saved;
@@ -992,7 +1080,7 @@ namespace CodexQuotaBar
                 status = snapshot.Line(settings.Bucket);
                 retry.Success(DateTime.UtcNow, Native.GetForegroundWindow() == target);
                 var alert = QuotaAlerts.Take(settings, settings.Bucket, snapshot.Windows(settings.Bucket));
-                if (alert != null) { SaveSettings(); tray.ShowBalloonTip(5000,"Codex 额度偏低",alert,ToolTipIcon.Warning); }
+                if (alert != null) { SaveSettings(); DesktopNotifications.Show("Codex 额度偏低",alert); }
             } catch (Exception e) {
                 if (closing || server != activeServer) return;
                 error = QuotaError.Describe(e); retry.Fail(DateTime.UtcNow);
@@ -1012,7 +1100,6 @@ namespace CodexQuotaBar
             }
             if (error != null) detail += "\n" + error + "\n下次重试 " + retry.DueUtc.ToLocalTime().ToString("HH:mm:ss");
             tooltip.SetToolTip(this, detail + "\n左键拖动调整位置；右键设置；前台每分钟刷新");
-            var text = "Codex · " + Display; tray.Text = text.Length > 63 ? text.Substring(0, 63) : text;
         }
         void Track()
         {
@@ -1149,11 +1236,11 @@ namespace CodexQuotaBar
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             Program.LogLifecycle("watcher-stopped");
-            closing = true; tracker.Stop(); refresh.Stop(); tray.Visible = false;
+            closing = true; tracker.Stop(); refresh.Stop();
             if(settingsBridge!=null) settingsBridge.Dispose();
             follower.Dispose();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-            anchorReader.Dispose(); ReleaseServer(); tracker.Dispose(); refresh.Dispose(); tooltip.Dispose(); tray.Dispose();
+            anchorReader.Dispose(); ReleaseServer(); tracker.Dispose(); refresh.Dispose(); tooltip.Dispose();
             if(settingsWindow!=null && !settingsWindow.IsDisposed) settingsWindow.Close();
             if (Program.DebugState) try { File.WriteAllText(Path.Combine(Program.Root, "runtime-state.json"), Json.Encode(new { running = false }), Encoding.UTF8); } catch { }
             base.OnFormClosed(e);
@@ -1168,7 +1255,7 @@ namespace CodexQuotaBar
 
     static class Program
     {
-        public const string Version = "1.3.1-local";
+        public const string Version = "1.3.2-local";
         public static string Root = AppDomain.CurrentDomain.BaseDirectory;
         public static EventWaitHandle StopSignal;
         public static EventWaitHandle SettingsSignal;
@@ -1213,6 +1300,8 @@ namespace CodexQuotaBar
         }
         static int Run(string[] args)
         {
+            if(args.Contains("--register-notifications")) { DesktopNotifications.Register(); return 0; }
+            if(args.Contains("--test-notification")) return DesktopNotifications.Show("Codex 额度条","通知测试：额度条已取消系统托盘图标，低额度提醒仍可使用。").GetAwaiter().GetResult() ? 0 : 1;
             if(args.Contains("--mcp")) return QuotaMcp.Run();
             if(args.Contains("--start-background")) { AutoStart.StartBackground(args.Contains("--debug-state")); return 0; }
             if(args.Contains("--check-running")) { try { SettingsBridge.Call("quota_status",null); return 0; } catch { return 1; } }

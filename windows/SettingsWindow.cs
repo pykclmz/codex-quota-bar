@@ -289,7 +289,7 @@ namespace CodexQuotaBar
         {
             title.Text="运行设置"; subtitle.Text="管理启动方式、显示状态和程序文件";
             ToggleCard("随 Windows 登录启动","登录后在后台等待 Codex 打开，自动显示额度条。","AutoStart");
-            ToggleCard("暂时隐藏额度条","仅影响当前运行。重新启动会恢复显示；可通过系统托盘打开设置取消隐藏。","Paused");
+            ToggleCard("暂时隐藏额度条","仅影响当前运行。可在 Codex 插件设置中取消隐藏，或重新启动额度条恢复显示。","Paused");
             var files=Card("帮助与备份","程序更新时自动备份，现有偏好设置会保留。");
             AddActions(files,ActionButton("打开使用说明",delegate { RunCommand("docs"); },false),ActionButton("打开备份目录",delegate { RunCommand("backups"); },false));
             var exit=Card("退出额度条","退出会停止额度条和后台更新。关闭此设置窗口会继续运行。");

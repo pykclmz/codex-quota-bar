@@ -15,6 +15,11 @@ namespace CodexQuotaBar
         static Dictionary<string,object> Call(string name,object arguments) { return Object(QuotaMcp.Handle("tools/call",Object(new { name=name,arguments=arguments }))); }
         static void Run()
         {
+            var toast=new System.Xml.XmlDocument();
+            toast.LoadXml(DesktopNotifications.Xml("额度 <20%> & 提醒","中文 '引号' \"文本\" & <quota>"));
+            var text=toast.SelectNodes("/toast/visual/binding/text");
+            Check(text.Count==2 && text[0].InnerText=="额度 <20%> & 提醒" && text[1].InnerText=="中文 '引号' \"文本\" & <quota>","Notification text preserves Chinese and XML special characters");
+            Check(toast.DocumentElement.GetAttribute("activationType")=="protocol" && toast.DocumentElement.GetAttribute("launch")=="codex://","Toast uses a fixed Codex link rather than quota text as an action");
             SettingsBridge.PipeName="CodexQuotaBar-test-"+Guid.NewGuid().ToString("N");
             var view=new SettingsView { Theme="auto",Detail=2,Bucket="codex",AutoStartKnown=true,AutoStart=true };
             view.Buckets["codex"]="Codex";
